@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "957304774574",
+    "project_id": "sosafe-91a80",
+    "storage_bucket": "sosafe-91a80.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:957304774574:android:56b87b17f0b4e3d8bbb23f",
+        "android_client_info": {
+          "package_name": "com.rohit.sosafe"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIJgZyiawjBKfgFcsvA3tK2d3VHZINjCY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
