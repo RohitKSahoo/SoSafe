@@ -42,6 +42,23 @@ class SOSTriggerManager(private val context: Context) {
         Log.d("SOSTriggerManager", "Detection Started")
     }
 
+    fun stopDetection() {
+        if (!isDetectionRunning) return
+
+        sensorManager.unregisterListener(shakeDetector)
+        try {
+            context.unregisterReceiver(powerButtonReceiver)
+        } catch (e: Exception) {
+            Log.e("SOSTriggerManager", "Error unregistering receiver", e)
+        }
+        
+        sosPendingRunnable?.let { handler.removeCallbacks(it) }
+        sosPendingRunnable = null
+        
+        isDetectionRunning = false
+        Log.d("SOSTriggerManager", "Detection Stopped")
+    }
+
     fun manualTrigger() {
         initiateSOS()
     }

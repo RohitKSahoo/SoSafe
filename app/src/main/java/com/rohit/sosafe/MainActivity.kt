@@ -2,40 +2,27 @@ package com.rohit.sosafe
 
 import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rohit.sosafe.ui.theme.SoSafeTheme
 import com.rohit.sosafe.data.UserManager
 import com.rohit.sosafe.utils.SOSTriggerManager
 import com.rohit.sosafe.service.SOSForegroundService
-import android.util.Log
+import com.rohit.sosafe.ui.DashboardScreen
+import com.rohit.sosafe.ui.DashboardViewModel
+import com.rohit.sosafe.ui.DashboardViewModelFactory
 
 class MainActivity : ComponentActivity() {
     private val TAG = "MainActivity"
@@ -51,14 +38,18 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             SoSafeTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    MainScreen(
-                        userManager = userManager,
-                        sosTriggerManager = sosTriggerManager,
-                        onPermissionsGranted = { startGuardianService() },
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
+                val viewModel: DashboardViewModel = viewModel(
+                    factory = DashboardViewModelFactory(userManager)
+                )
+                
+                MainScreen(
+                    userManager = userManager,
+                    viewModel = viewModel,
+                    onPermissionsGranted = { startGuardianService() },
+                    onTriggerSOS = { sosTriggerManager.manualTrigger() },
+                    onStopService = { stopGuardianService() },
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
     }
@@ -67,18 +58,23 @@ class MainActivity : ComponentActivity() {
         val serviceIntent = Intent(this, SOSForegroundService::class.java)
         ContextCompat.startForegroundService(this, serviceIntent)
     }
+
+    private fun stopGuardianService() {
+        val serviceIntent = Intent(this, SOSForegroundService::class.java)
+        stopService(serviceIntent)
+        Log.d(TAG, "Stop Service requested")
+    }
 }
 
 @Composable
 fun MainScreen(
     userManager: UserManager,
-    sosTriggerManager: SOSTriggerManager,
+    viewModel: DashboardViewModel,
     onPermissionsGranted: () -> Unit,
+    onTriggerSOS: () -> Unit,
+    onStopService: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var userCode by remember { mutableStateOf("Generating code...") }
-    val TAG_SCREEN = "MainScreen"
-
     val permissionsToRequest = mutableListOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -92,66 +88,71 @@ fun MainScreen(
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.entries.all { it.value }
-        if (allGranted) {
-            Log.d(TAG_SCREEN, "All permissions granted")
+        if (permissions.entries.all { it.value }) {
             onPermissionsGranted()
-        } else {
-            Log.e(TAG_SCREEN, "Some permissions denied")
         }
     }
 
     LaunchedEffect(Unit) {
-        // Check if permissions are already granted
-        val allGranted = permissionsToRequest.all {
-            ContextCompat.checkSelfPermission(userManager.getContextForTestingOnly(), it) == PackageManager.PERMISSION_GRANTED
-        }
-        
-        if (allGranted) {
+        if (permissionsToRequest.all { userManager.hasPermission(it) }) {
             onPermissionsGranted()
         } else {
             launcher.launch(permissionsToRequest)
         }
-        
-        userCode = userManager.getUserCode()
     }
 
-    Column(
-        modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = "SoSafe is Active",
-            style = MaterialTheme.typography.headlineMedium,
-            color = Color(0xFF4CAF50),
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
-        Text(
-            text = "Your User Code: $userCode",
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.padding(bottom = 32.dp)
-        )
+    var showAddContactDialog by remember { mutableStateOf(false) }
 
-        Button(
-            onClick = { sosTriggerManager.manualTrigger() },
-            colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
-            modifier = Modifier.padding(bottom = 16.dp)
-        ) {
-            Text("TRIGGER SOS (TEST)", color = Color.White)
-        }
-        
-        Text(
-            text = "Detection works when screen is OFF",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(bottom = 32.dp)
+    DashboardScreen(
+        viewModel = viewModel,
+        onAddContactClick = { showAddContactDialog = true },
+        onTriggerSOS = onTriggerSOS,
+        onStopService = onStopService,
+        modifier = modifier
+    )
+
+    if (showAddContactDialog) {
+        AddContactDialog(
+            onDismiss = { showAddContactDialog = false },
+            onAdd = { code ->
+                viewModel.addContact(code) { result ->
+                    if (result.isSuccess) {
+                        showAddContactDialog = false
+                    }
+                }
+            }
         )
     }
 }
 
-// Extension to help UserManager get context safely for checkSelfPermission
-private fun UserManager.getContextForTestingOnly(): android.content.Context {
-    // This is a bit of a hack to get context since UserManager is private, 
-    // but in a real app we'd have a better DI or context holder.
-    return (this::class.java.getDeclaredField("context").apply { isAccessible = true }.get(this) as android.content.Context)
+@Composable
+fun AddContactDialog(
+    onDismiss: () -> Unit,
+    onAdd: (String) -> Unit
+) {
+    var code by remember { mutableStateOf("") }
+    
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add New Contact") },
+        text = {
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it },
+                label = { Text("User Access Code") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(onClick = { onAdd(code) }) {
+                Text("ADD")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL")
+            }
+        }
+    )
 }

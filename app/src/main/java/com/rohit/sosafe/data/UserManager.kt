@@ -2,10 +2,10 @@ package com.rohit.sosafe.data
 
 import android.content.Context
 import android.util.Log
+import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.tasks.await
-import java.util.UUID
 import kotlin.random.Random
 
 class UserManager(private val context: Context) {
@@ -14,6 +14,11 @@ class UserManager(private val context: Context) {
     private val USER_CODE_KEY = "user_code"
     private val PREFS_NAME = "sosafe_prefs"
     private val db = Firebase.firestore
+
+    // Helper for permission checks in MainActivity without reflection
+    fun hasPermission(permission: String): Boolean {
+        return context.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
 
     // Synchronous getter for Service use
     fun getUserCodeSync(): String? {
@@ -50,6 +55,45 @@ class UserManager(private val context: Context) {
             Log.d(TAG, "User code '$userCode' stored in Firestore.")
         } catch (e: Exception) {
             Log.e(TAG, "Error storing user code: ${e.message}")
+        }
+    }
+
+    // --- CONTACT SYSTEM ---
+
+    suspend fun addContact(contactCode: String): Result<Unit> {
+        val myCode = getUserCodeSync() ?: return Result.failure(Exception("User not initialized"))
+        
+        return try {
+            // Verify if contact exists
+            val contactDoc = db.collection("users").document(contactCode).get().await()
+            if (!contactDoc.exists()) {
+                return Result.failure(Exception("Invalid Contact Code"))
+            }
+
+            // Add to my contacts collection
+            val contactData = hashMapOf(
+                "contactCode" to contactCode,
+                "addedAt" to System.currentTimeMillis()
+            )
+            
+            db.collection("users").document(myCode)
+                .collection("contacts").document(contactCode)
+                .set(contactData).await()
+                
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getContacts(): List<String> {
+        val myCode = getUserCodeSync() ?: return emptyList()
+        return try {
+            val snapshot = db.collection("users").document(myCode)
+                .collection("contacts").get().await()
+            snapshot.documents.mapNotNull { it.getString("contactCode") }
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 }
