@@ -22,6 +22,7 @@ import com.google.firebase.firestore.GeoPoint
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import com.rohit.sosafe.MainActivity
+import com.rohit.sosafe.data.contracts.*
 import com.rohit.sosafe.utils.SOSTriggerManager
 import com.rohit.sosafe.data.UserManager
 import com.rohit.sosafe.utils.CloudinaryUploader
@@ -84,7 +85,6 @@ class SOSForegroundService : Service() {
     private fun startEmergencyMode() {
         if (isEmergencyActive) return
         isEmergencyActive = true
-        // Rule 2: sessionId format
         sessionId = "session_" + System.currentTimeMillis()
         ServiceState.setEmergencyActive(true)
         
@@ -99,22 +99,20 @@ class SOSForegroundService : Service() {
     private fun triggerAlerts() {
         val myCode = userManager.getUserCodeSync() ?: return
         
-        // Rule 1 & 2: Fetch contacts from array and create alerts
-        db.collection("users").document(myCode).get()
+        db.collection(SoSafeContract.Collections.USERS).document(myCode).get()
             .addOnSuccessListener { doc ->
                 @Suppress("UNCHECKED_CAST")
-                val contacts = doc.get("contacts") as? List<String> ?: emptyList()
+                val contacts = doc.get(SoSafeContract.Fields.CONTACTS) as? List<String> ?: emptyList()
                 
                 for (contactId in contacts) {
-                    val alert = hashMapOf(
-                        "senderId" to myCode,
-                        "receiverId" to contactId,
-                        "sessionId" to sessionId,
-                        "status" to "sent",
-                        "createdAt" to System.currentTimeMillis()
+                    val alert = Alert(
+                        senderId = myCode,
+                        receiverId = contactId,
+                        sessionId = sessionId,
+                        status = SoSafeContract.Status.SENT,
+                        createdAt = System.currentTimeMillis()
                     )
-                    // Rule 2: Use .add() for unique documents in top-level collection
-                    db.collection("alerts").add(alert)
+                    db.collection(SoSafeContract.Collections.ALERTS).add(alert)
                         .addOnSuccessListener { Log.d("AlertSystem", "Alert sent to $contactId") }
                 }
             }
@@ -132,14 +130,11 @@ class SOSForegroundService : Service() {
     }
 
     private fun uploadLocation(lat: Double, lng: Double) {
-        // Rule 3: Path and field mapping for location
-        db.collection("sos_sessions").document(sessionId)
-            .collection("location_updates").add(
-                hashMapOf(
-                    "location" to GeoPoint(lat, lng),
-                    "timestamp" to System.currentTimeMillis()
-                )
-            )
+        val update = LocationUpdate(
+            location = GeoPoint(lat, lng),
+            timestamp = System.currentTimeMillis()
+        )
+        db.collection(SoSafeContract.getLocationUpdatesSubcollection(sessionId)).add(update)
     }
 
     private fun startAudioChunking() {
@@ -200,14 +195,11 @@ class SOSForegroundService : Service() {
     }
 
     private fun saveAudioUrlToFirestore(url: String) {
-        // Rule 3: Path and field mapping for audio (fileUrl)
-        db.collection("sos_sessions").document(sessionId)
-            .collection("audio_chunks").add(
-                hashMapOf(
-                    "fileUrl" to url,
-                    "timestamp" to System.currentTimeMillis()
-                )
-            )
+        val chunk = AudioChunk(
+            fileUrl = url,
+            timestamp = System.currentTimeMillis()
+        )
+        db.collection(SoSafeContract.getAudioChunksSubcollection(sessionId)).add(chunk)
     }
 
     override fun onDestroy() {

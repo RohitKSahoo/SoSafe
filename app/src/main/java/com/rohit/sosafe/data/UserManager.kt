@@ -3,9 +3,10 @@ package com.rohit.sosafe.data
 import android.content.Context
 import android.util.Log
 import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
+import com.rohit.sosafe.data.contracts.SoSafeContract
+import com.rohit.sosafe.data.contracts.User
 import kotlinx.coroutines.tasks.await
 import kotlin.random.Random
 
@@ -16,18 +17,15 @@ class UserManager(private val context: Context) {
     private val PREFS_NAME = "sosafe_prefs"
     private val db = Firebase.firestore
 
-    // Helper for permission checks in MainActivity without reflection
     fun hasPermission(permission: String): Boolean {
         return context.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
-    // Synchronous getter for Service use
     fun getUserCodeSync(): String? {
         val sharedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return sharedPrefs.getString(USER_CODE_KEY, null)
     }
 
-    // Function to get or generate the user code
     suspend fun getUserCode(): String {
         val sharedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         var userCode = sharedPrefs.getString(USER_CODE_KEY, null)
@@ -47,37 +45,38 @@ class UserManager(private val context: Context) {
     }
 
     private suspend fun storeUserCodeInFirestore(userCode: String) {
-        val user = hashMapOf(
-            "userCode" to userCode,
-            "contacts" to emptyList<String>(),
-            "createdAt" to System.currentTimeMillis()
+        val user = User(
+            userCode = userCode,
+            contacts = emptyList(),
+            createdAt = System.currentTimeMillis()
         )
         try {
-            db.collection("users").document(userCode).set(user).await()
+            db.collection(SoSafeContract.Collections.USERS)
+                .document(userCode)
+                .set(user)
+                .await()
             Log.d(TAG, "User code '$userCode' stored in Firestore.")
         } catch (e: Exception) {
             Log.e(TAG, "Error storing user code: ${e.message}")
         }
     }
 
-    // --- CONTACT SYSTEM ---
-
     suspend fun addContact(inputCode: String): Result<Unit> {
         val myCode = getUserCodeSync() ?: return Result.failure(Exception("User not initialized"))
-        
-        // Rule 4: Strip hyphens
         val contactCode = inputCode.replace("-", "").trim()
 
         return try {
-            // Verify if contact exists
-            val contactDoc = db.collection("users").document(contactCode).get().await()
+            val contactDoc = db.collection(SoSafeContract.Collections.USERS)
+                .document(contactCode)
+                .get()
+                .await()
             if (!contactDoc.exists()) {
                 return Result.failure(Exception("Invalid Contact Code"))
             }
 
-            // Rule 1: Add to contacts array in the user document
-            db.collection("users").document(myCode)
-                .update("contacts", FieldValue.arrayUnion(contactCode))
+            db.collection(SoSafeContract.Collections.USERS)
+                .document(myCode)
+                .update(SoSafeContract.Fields.CONTACTS, FieldValue.arrayUnion(contactCode))
                 .await()
                 
             Result.success(Unit)
@@ -89,9 +88,12 @@ class UserManager(private val context: Context) {
     suspend fun getContacts(): List<String> {
         val myCode = getUserCodeSync() ?: return emptyList()
         return try {
-            val doc = db.collection("users").document(myCode).get().await()
+            val doc = db.collection(SoSafeContract.Collections.USERS)
+                .document(myCode)
+                .get()
+                .await()
             @Suppress("UNCHECKED_CAST")
-            (doc.get("contacts") as? List<String>) ?: emptyList()
+            (doc.get(SoSafeContract.Fields.CONTACTS) as? List<String>) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
