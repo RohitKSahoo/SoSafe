@@ -18,6 +18,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.google.android.gms.location.*
+import com.google.firebase.firestore.GeoPoint
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import com.rohit.sosafe.MainActivity
@@ -26,7 +27,6 @@ import com.rohit.sosafe.data.UserManager
 import com.rohit.sosafe.utils.CloudinaryUploader
 import com.rohit.sosafe.utils.ServiceState
 import java.io.File
-import java.util.UUID
 
 class SOSForegroundService : Service() {
 
@@ -84,7 +84,8 @@ class SOSForegroundService : Service() {
     private fun startEmergencyMode() {
         if (isEmergencyActive) return
         isEmergencyActive = true
-        sessionId = UUID.randomUUID().toString()
+        // Rule 2: sessionId format
+        sessionId = "session_" + System.currentTimeMillis()
         ServiceState.setEmergencyActive(true)
         
         val notification = createNotification("!!! EMERGENCY SOS ACTIVE !!!", "Broadcasting alerts, location and audio.")
@@ -98,19 +99,22 @@ class SOSForegroundService : Service() {
     private fun triggerAlerts() {
         val myCode = userManager.getUserCodeSync() ?: return
         
-        // Fetch contacts and create alert for each
-        db.collection("users").document(myCode).collection("contacts").get()
-            .addOnSuccessListener { snapshot ->
-                for (doc in snapshot.documents) {
-                    val contactId = doc.getString("contactCode") ?: continue
-                    val alertData = hashMapOf(
+        // Rule 1 & 2: Fetch contacts from array and create alerts
+        db.collection("users").document(myCode).get()
+            .addOnSuccessListener { doc ->
+                @Suppress("UNCHECKED_CAST")
+                val contacts = doc.get("contacts") as? List<String> ?: emptyList()
+                
+                for (contactId in contacts) {
+                    val alert = hashMapOf(
                         "senderId" to myCode,
+                        "receiverId" to contactId,
                         "sessionId" to sessionId,
-                        "timestamp" to System.currentTimeMillis(),
-                        "status" to "active"
+                        "status" to "sent",
+                        "createdAt" to System.currentTimeMillis()
                     )
-                    // Write to alerts/{contactId}
-                    db.collection("alerts").document(contactId).set(alertData)
+                    // Rule 2: Use .add() for unique documents in top-level collection
+                    db.collection("alerts").add(alert)
                         .addOnSuccessListener { Log.d("AlertSystem", "Alert sent to $contactId") }
                 }
             }
@@ -128,10 +132,14 @@ class SOSForegroundService : Service() {
     }
 
     private fun uploadLocation(lat: Double, lng: Double) {
-        val userCode = userManager.getUserCodeSync() ?: "unknown"
-        db.collection("sos_sessions").document(userCode).collection("location_updates").add(
-            hashMapOf("lat" to lat, "lng" to lng, "timestamp" to System.currentTimeMillis())
-        )
+        // Rule 3: Path and field mapping for location
+        db.collection("sos_sessions").document(sessionId)
+            .collection("location_updates").add(
+                hashMapOf(
+                    "location" to GeoPoint(lat, lng),
+                    "timestamp" to System.currentTimeMillis()
+                )
+            )
     }
 
     private fun startAudioChunking() {
@@ -140,9 +148,6 @@ class SOSForegroundService : Service() {
 
     private fun recordNextChunk() {
         if (!isEmergencyActive) return
-        
-        // --- AUDIO RETRY LOGIC ---
-        // Check for failed uploads from previous loops
         retryFailedUploads()
 
         try {
@@ -165,9 +170,7 @@ class SOSForegroundService : Service() {
     private fun retryFailedUploads() {
         val files = cacheDir.listFiles { _, name -> name.startsWith("chunk_") && name.endsWith(".aac") }
         files?.forEach { file ->
-            // If the file is not the one currently being recorded
             if (file.absolutePath != currentAudioFile?.absolutePath) {
-                Log.d("AudioSystem", "Retrying upload for: ${file.name}")
                 uploadAudioToCloudinary(file)
             }
         }
@@ -190,17 +193,21 @@ class SOSForegroundService : Service() {
         cloudinaryUploader.uploadAudio(file, 
             onSuccess = { url ->
                 saveAudioUrlToFirestore(url)
-                file.delete() // Only delete on success
+                file.delete()
             },
-            onFailure = { Log.e("AudioSystem", "Upload failed, keeping file for retry: ${file.name}") }
+            onFailure = { Log.e("AudioSystem", "Upload failed") }
         )
     }
 
     private fun saveAudioUrlToFirestore(url: String) {
-        val userCode = userManager.getUserCodeSync() ?: "unknown"
-        db.collection("sos_sessions").document(userCode).collection("audio_chunks").add(
-            hashMapOf("audioUrl" to url, "timestamp" to System.currentTimeMillis())
-        )
+        // Rule 3: Path and field mapping for audio (fileUrl)
+        db.collection("sos_sessions").document(sessionId)
+            .collection("audio_chunks").add(
+                hashMapOf(
+                    "fileUrl" to url,
+                    "timestamp" to System.currentTimeMillis()
+                )
+            )
     }
 
     override fun onDestroy() {

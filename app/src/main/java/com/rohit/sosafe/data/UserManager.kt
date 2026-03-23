@@ -2,6 +2,7 @@ package com.rohit.sosafe.data
 
 import android.content.Context
 import android.util.Log
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
@@ -40,7 +41,7 @@ class UserManager(private val context: Context) {
     }
 
     private fun generateUniqueUserCode(): String {
-        val length = Random.nextInt(6, 9)
+        val length = 8
         val allowedChars = ('0'..'9') + ('A'..'Z') + ('a'..'z')
         return (1..length).map { allowedChars.random() }.joinToString("")
     }
@@ -48,6 +49,7 @@ class UserManager(private val context: Context) {
     private suspend fun storeUserCodeInFirestore(userCode: String) {
         val user = hashMapOf(
             "userCode" to userCode,
+            "contacts" to emptyList<String>(),
             "createdAt" to System.currentTimeMillis()
         )
         try {
@@ -60,9 +62,12 @@ class UserManager(private val context: Context) {
 
     // --- CONTACT SYSTEM ---
 
-    suspend fun addContact(contactCode: String): Result<Unit> {
+    suspend fun addContact(inputCode: String): Result<Unit> {
         val myCode = getUserCodeSync() ?: return Result.failure(Exception("User not initialized"))
         
+        // Rule 4: Strip hyphens
+        val contactCode = inputCode.replace("-", "").trim()
+
         return try {
             // Verify if contact exists
             val contactDoc = db.collection("users").document(contactCode).get().await()
@@ -70,15 +75,10 @@ class UserManager(private val context: Context) {
                 return Result.failure(Exception("Invalid Contact Code"))
             }
 
-            // Add to my contacts collection
-            val contactData = hashMapOf(
-                "contactCode" to contactCode,
-                "addedAt" to System.currentTimeMillis()
-            )
-            
+            // Rule 1: Add to contacts array in the user document
             db.collection("users").document(myCode)
-                .collection("contacts").document(contactCode)
-                .set(contactData).await()
+                .update("contacts", FieldValue.arrayUnion(contactCode))
+                .await()
                 
             Result.success(Unit)
         } catch (e: Exception) {
@@ -89,9 +89,9 @@ class UserManager(private val context: Context) {
     suspend fun getContacts(): List<String> {
         val myCode = getUserCodeSync() ?: return emptyList()
         return try {
-            val snapshot = db.collection("users").document(myCode)
-                .collection("contacts").get().await()
-            snapshot.documents.mapNotNull { it.getString("contactCode") }
+            val doc = db.collection("users").document(myCode).get().await()
+            @Suppress("UNCHECKED_CAST")
+            (doc.get("contacts") as? List<String>) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
