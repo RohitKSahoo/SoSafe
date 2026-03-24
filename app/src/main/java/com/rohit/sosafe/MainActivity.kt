@@ -11,10 +11,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rohit.sosafe.ui.theme.SoSafeTheme
 import com.rohit.sosafe.data.UserManager
@@ -23,33 +23,82 @@ import com.rohit.sosafe.service.SOSForegroundService
 import com.rohit.sosafe.ui.DashboardScreen
 import com.rohit.sosafe.ui.DashboardViewModel
 import com.rohit.sosafe.ui.DashboardViewModelFactory
+import com.rohit.sosafe.data.AppMode
+import com.rohit.sosafe.data.AppModeManager
+import com.rohit.sosafe.ui.ModeSelectionScreen
+import com.rohit.sosafe.ui.AddContactDialog
+import com.rohit.sosafe.data.RoleManager
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private val TAG = "MainActivity"
+    private val tag = "MainActivity"
     private lateinit var userManager: UserManager
     private lateinit var sosTriggerManager: SOSTriggerManager
+    private lateinit var appModeManager: AppModeManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         userManager = UserManager(applicationContext)
+        appModeManager = AppModeManager(applicationContext)
         sosTriggerManager = SOSTriggerManager(this)
+        
+        // Initialize RoleManager
+        val currentMode = appModeManager.getAppMode()
+        if (currentMode != null) {
+            RoleManager.role = currentMode.name
+            lifecycleScope.launch {
+                val myId = userManager.getUserCodeSync() ?: userManager.getUserCode()
+                RoleManager.myUserId = myId
+                val contacts = userManager.getContacts()
+                if (contacts.isNotEmpty()) {
+                    RoleManager.pairedUserId = contacts.first()
+                }
+                RoleManager.updateAuditLog()
+            }
+        }
         
         setContent {
             SoSafeTheme {
-                val viewModel: DashboardViewModel = viewModel(
-                    factory = DashboardViewModelFactory(userManager)
-                )
-                
-                MainScreen(
-                    userManager = userManager,
-                    viewModel = viewModel,
-                    onPermissionsGranted = { startGuardianService() },
-                    onTriggerSOS = { sosTriggerManager.manualTrigger() },
-                    onStopService = { stopGuardianService() },
-                    modifier = Modifier.fillMaxSize()
-                )
+                var currentAppMode by remember { mutableStateOf(appModeManager.getAppMode()) }
+
+                if (currentAppMode == null) {
+                    ModeSelectionScreen { selectedMode ->
+                        appModeManager.setAppMode(selectedMode)
+                        RoleManager.role = selectedMode.name
+                        currentAppMode = selectedMode
+                    }
+                } else {
+                    val viewModel: DashboardViewModel = viewModel(
+                        factory = DashboardViewModelFactory(userManager, appModeManager)
+                    )
+                    
+                    MainScreen(
+                        userManager = userManager,
+                        viewModel = viewModel,
+                        appMode = currentAppMode!!,
+                        onPermissionsGranted = { 
+                            // START SERVICE FOR BOTH: SENDER (Protection) & GUARDIAN (Listening)
+                            startGuardianService() 
+                        },
+                        onTriggerSOS = { sosTriggerManager.manualTrigger() },
+                        onStopService = { stopGuardianService() },
+                        onSwitchMode = {
+                            val nextMode = if (currentAppMode == AppMode.SENDER) AppMode.GUARDIAN else AppMode.SENDER
+                            appModeManager.setAppMode(nextMode)
+                            RoleManager.role = nextMode.name
+                            
+                            // Stop service before switching to ensure clean restart
+                            stopGuardianService()
+                            
+                            // Restart activity to reset RoleManager and states
+                            finish()
+                            startActivity(intent)
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
     }
@@ -62,7 +111,7 @@ class MainActivity : ComponentActivity() {
     private fun stopGuardianService() {
         val serviceIntent = Intent(this, SOSForegroundService::class.java)
         stopService(serviceIntent)
-        Log.d(TAG, "Stop Service requested")
+        Log.d(tag, "Stop Service requested")
     }
 }
 
@@ -70,9 +119,11 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     userManager: UserManager,
     viewModel: DashboardViewModel,
+    appMode: AppMode,
     onPermissionsGranted: () -> Unit,
     onTriggerSOS: () -> Unit,
     onStopService: () -> Unit,
+    onSwitchMode: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val permissionsToRequest = mutableListOf(
@@ -105,9 +156,11 @@ fun MainScreen(
 
     DashboardScreen(
         viewModel = viewModel,
+        appMode = appMode,
         onAddContactClick = { showAddContactDialog = true },
         onTriggerSOS = onTriggerSOS,
         onStopService = onStopService,
+        onSwitchMode = onSwitchMode,
         modifier = modifier
     )
 
@@ -123,36 +176,4 @@ fun MainScreen(
             }
         )
     }
-}
-
-@Composable
-fun AddContactDialog(
-    onDismiss: () -> Unit,
-    onAdd: (String) -> Unit
-) {
-    var code by remember { mutableStateOf("") }
-    
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add New Contact") },
-        text = {
-            OutlinedTextField(
-                value = code,
-                onValueChange = { code = it },
-                label = { Text("User Access Code") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        confirmButton = {
-            Button(onClick = { onAdd(code) }) {
-                Text("ADD")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("CANCEL")
-            }
-        }
-    )
 }

@@ -62,6 +62,9 @@ dependencies {
 
     // Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    
+    // Map - osmdroid
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

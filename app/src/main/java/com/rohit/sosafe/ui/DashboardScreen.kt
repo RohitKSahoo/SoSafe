@@ -25,6 +25,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rohit.sosafe.data.AppMode
+import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.*
 
 @Composable
@@ -49,71 +51,101 @@ fun GridBackground(modifier: Modifier = Modifier) {
 @Composable
 fun DashboardScreen(
     viewModel: DashboardViewModel,
-    onAddContactClick: () -> Unit, // Keeping parameter for now to avoid breaking factory but won't use it
+    appMode: AppMode,
+    onAddContactClick: () -> Unit,
     onTriggerSOS: () -> Unit,
     onStopService: () -> Unit,
+    onSwitchMode: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsState()
     var selectedTab by remember { mutableIntStateOf(0) }
+    var showMonitoringScreen by remember { mutableStateOf(false) }
+    var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
 
-    Box(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
-        GridBackground()
-        
-        Scaffold(
-            topBar = { TopBar(state.isProtectionActive, onStopService) },
-            bottomBar = { 
-                BottomNav(
-                    selectedTab = selectedTab,
-                    onTabSelected = { selectedTab = it }
-                ) 
+    // Alert Popup Handling (Migrated to Sessions)
+    if (appMode == AppMode.GUARDIAN && state.activeEmergencySession != null) {
+        val session = state.activeEmergencySession!!
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissSession(session.sessionId) },
+            title = { Text("!!! EMERGENCY ALERT !!!", color = DangerRed, fontWeight = FontWeight.Bold) },
+            text = { Text("Sender ID: ${session.senderId} has triggered an SOS.", color = PureWhite) },
+            confirmButton = {
+                Button(
+                    onClick = { 
+                        selectedMonitoringSession = session
+                        showMonitoringScreen = true
+                        viewModel.dismissSession(session.sessionId)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed)
+                ) {
+                    Text("VIEW LIVE", color = PureWhite)
+                }
             },
-            containerColor = Color.Transparent,
-            modifier = modifier.fillMaxSize()
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .padding(padding)
-                    .padding(16.dp)
-                    .fillMaxSize()
-            ) {
-                when (selectedTab) {
-                    0 -> { // Dashboard
-                        UserCodeCard(state.userCode)
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissSession(session.sessionId) }) {
+                    Text("DISMISS", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
 
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            StatusCard(
-                                title = "NETWORK",
-                                status = if (state.connectionStatus == "STABLE") "CONNECTED" else "OFFLINE",
-                                icon = Icons.Default.Wifi,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            StatusCard(
-                                title = "BROADCAST",
-                                status = if (state.isEmergency) "LIVE" else "READY",
-                                icon = Icons.Default.Radio,
-                                isLive = state.isEmergency,
-                                modifier = Modifier.weight(1f)
+    if (showMonitoringScreen && selectedMonitoringSession != null) {
+        MonitoringScreen(
+            session = selectedMonitoringSession!!,
+            onClose = { 
+                showMonitoringScreen = false
+                selectedMonitoringSession = null
+            }
+        )
+    } else {
+        Box(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
+            GridBackground()
+            
+            Scaffold(
+                topBar = { TopBar(state.isProtectionActive, appMode, onStopService) },
+                bottomBar = { 
+                    BottomNav(
+                        selectedTab = selectedTab,
+                        onTabSelected = { selectedTab = it }
+                    ) 
+                },
+                containerColor = Color.Transparent,
+                modifier = modifier.fillMaxSize()
+            ) { padding ->
+                Column(
+                    modifier = Modifier
+                        .padding(padding)
+                        .padding(16.dp)
+                        .fillMaxSize()
+                ) {
+                    when (selectedTab) {
+                        0 -> { // Dashboard
+                            if (appMode == AppMode.SENDER) {
+                                SenderDashboard(state)
+                            } else {
+                                GuardianDashboard(
+                                    state = state, 
+                                    onAddContactClick = onAddContactClick,
+                                    onContactClick = { contact ->
+                                        if (contact.status == ContactStatus.EMERGENCY && contact.activeSession != null) {
+                                            selectedMonitoringSession = contact.activeSession
+                                            showMonitoringScreen = true
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                        1 -> { // Settings
+                            SystemConfigSection(
+                                appMode = appMode,
+                                onTriggerSOS = onTriggerSOS,
+                                onStopService = onStopService,
+                                onSwitchMode = onSwitchMode
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(32.dp))
-
-                        ContactsSection(
-                            contacts = state.contacts
-                        )
-                    }
-                    1 -> { // Settings
-                        SystemConfigSection(
-                            onTriggerSOS = onTriggerSOS,
-                            onStopService = onStopService
-                        )
                     }
                 }
             }
@@ -122,7 +154,58 @@ fun DashboardScreen(
 }
 
 @Composable
-fun TopBar(isProtectionActive: Boolean, onStopService: () -> Unit) {
+fun SenderDashboard(state: DashboardState) {
+    Column {
+        UserCodeCard(state.userCode)
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            StatusCard(
+                title = "NETWORK",
+                status = if (state.connectionStatus == "STABLE") "CONNECTED" else "OFFLINE",
+                icon = Icons.Default.Wifi,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            StatusCard(
+                title = "BROADCAST",
+                status = if (state.isEmergency) "LIVE" else "READY",
+                icon = Icons.Default.Radio,
+                isLive = state.isEmergency,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(modifier = Modifier.height(32.dp))
+        ContactsSection(
+            title = "LINKED GUARDIANS", 
+            contacts = state.contacts, 
+            showAddButton = false
+        )
+    }
+}
+
+@Composable
+fun GuardianDashboard(
+    state: DashboardState, 
+    onAddContactClick: () -> Unit,
+    onContactClick: (Contact) -> Unit
+) {
+    Column {
+        Text("MY PROTECTED USERS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Spacer(modifier = Modifier.height(16.dp))
+        ContactsSection(
+            title = "PROTECTED USERS", 
+            contacts = state.contacts, 
+            showAddButton = true,
+            onAddContactClick = onAddContactClick,
+            onContactClick = onContactClick
+        )
+    }
+}
+
+@Composable
+fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> Unit) {
     Row(
         modifier = Modifier
             .statusBarsPadding()
@@ -140,13 +223,15 @@ fun TopBar(isProtectionActive: Boolean, onStopService: () -> Unit) {
                 letterSpacing = 1.sp
             )
             Text(
-                text = if (isProtectionActive) "PROTECTION ENABLED" else "SYSTEM IDLE",
+                text = if (appMode == AppMode.SENDER) {
+                    if (isProtectionActive) "PROTECTION ENABLED" else "SYSTEM IDLE"
+                } else "GUARDIAN MODE ACTIVE",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isProtectionActive) SuccessGreen else LightGrey
+                color = if (appMode == AppMode.SENDER && isProtectionActive) SuccessGreen else LightGrey
             )
         }
 
-        if (isProtectionActive) {
+        if (appMode == AppMode.SENDER && isProtectionActive) {
             IconButton(
                 onClick = onStopService,
                 modifier = Modifier
@@ -221,9 +306,15 @@ fun StatusCard(title: String, status: String, icon: ImageVector, isLive: Boolean
 }
 
 @Composable
-fun ContactsSection(contacts: List<Contact>) {
+fun ContactsSection(
+    title: String, 
+    contacts: List<Contact>, 
+    showAddButton: Boolean,
+    onAddContactClick: () -> Unit = {},
+    onContactClick: (Contact) -> Unit = {}
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text(text = "LINKED GUARDIANS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Text(text = title, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(modifier = Modifier.height(16.dp))
         
         if (contacts.isEmpty()) {
@@ -234,23 +325,51 @@ fun ContactsSection(contacts: List<Contact>) {
                     .border(1.dp, DarkStroke, RoundedCornerShape(4.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Text("NO GUARDIANS LINKED YET", style = MaterialTheme.typography.labelSmall, color = LightGrey)
+                Text("NO USERS LINKED", style = MaterialTheme.typography.labelSmall, color = LightGrey)
             }
         } else {
             LazyColumn(modifier = Modifier.heightIn(max = 400.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(contacts) { contact -> ContactItem(contact) }
+                items(contacts) { contact -> 
+                    ContactItem(
+                        contact = contact, 
+                        onClick = { onContactClick(contact) }
+                    ) 
+                }
+            }
+        }
+        
+        if (showAddButton) {
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            Button(
+                onClick = onAddContactClick,
+                modifier = Modifier.fillMaxWidth().height(64.dp),
+                shape = RoundedCornerShape(4.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(text = "ADD USER", fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
 @Composable
-fun ContactItem(contact: Contact) {
+fun ContactItem(contact: Contact, onClick: () -> Unit) {
+    val isEmergency = contact.status == ContactStatus.EMERGENCY
+    
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
-            .background(DarkCard)
+            .background(if (isEmergency) DangerRed.copy(alpha = 0.2f) else DarkCard)
+            .border(
+                width = if (isEmergency) 2.dp else 0.dp,
+                color = if (isEmergency) DangerRed else Color.Transparent,
+                shape = RoundedCornerShape(4.dp)
+            )
+            .clickable(enabled = isEmergency) { onClick() }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -258,52 +377,98 @@ fun ContactItem(contact: Contact) {
             modifier = Modifier
                 .size(40.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(MediumGrey),
+                .background(if (isEmergency) DangerRed else MediumGrey),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.Shield, contentDescription = null, tint = PureWhite, modifier = Modifier.size(20.dp))
+            Icon(
+                imageVector = if (isEmergency) Icons.Default.Warning else Icons.Default.Person, 
+                contentDescription = null, 
+                tint = PureWhite, 
+                modifier = Modifier.size(20.dp)
+            )
         }
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = contact.name, style = MaterialTheme.typography.bodyLarge, color = TextPrimary, fontWeight = FontWeight.SemiBold)
             Text(
-                text = if (contact.status == ContactStatus.ONLINE) "ACTIVE" else "IDLE", 
-                style = MaterialTheme.typography.labelSmall, 
-                color = if (contact.status == ContactStatus.ONLINE) SuccessGreen else LightGrey
+                text = contact.name, 
+                style = MaterialTheme.typography.bodyLarge, 
+                color = TextPrimary, 
+                fontWeight = FontWeight.SemiBold
             )
+            Text(
+                text = when(contact.status) {
+                    ContactStatus.EMERGENCY -> "!!! SOS ACTIVE !!!"
+                    ContactStatus.ONLINE -> "READY"
+                    else -> "IDLE"
+                }, 
+                style = MaterialTheme.typography.labelSmall, 
+                color = if (isEmergency) DangerRed else if (contact.status == ContactStatus.ONLINE) SuccessGreen else LightGrey,
+                fontWeight = if (isEmergency) FontWeight.Bold else FontWeight.Normal
+            )
+        }
+        
+        if (isEmergency) {
+            Button(
+                onClick = onClick,
+                colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                modifier = Modifier.height(32.dp),
+                shape = RoundedCornerShape(2.dp)
+            ) {
+                Text("VIEW", color = PureWhite, style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
 
 @Composable
-fun SystemConfigSection(onTriggerSOS: () -> Unit, onStopService: () -> Unit) {
+fun SystemConfigSection(appMode: AppMode, onTriggerSOS: () -> Unit, onStopService: () -> Unit, onSwitchMode: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(text = "EMERGENCY ACTIONS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-        
-        Card(
-            modifier = Modifier.fillMaxWidth().clickable { onTriggerSOS() },
-            colors = CardDefaults.cardColors(containerColor = DangerRed),
-            shape = RoundedCornerShape(4.dp)
-        ) {
-            Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Warning, contentDescription = null, tint = PureWhite)
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("TRIGGER MANUAL SOS", color = PureWhite, fontWeight = FontWeight.Bold)
+        if (appMode == AppMode.SENDER) {
+            Text(text = "EMERGENCY ACTIONS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+            Card(
+                modifier = Modifier.fillMaxWidth().clickable { onTriggerSOS() },
+                colors = CardDefaults.cardColors(containerColor = DangerRed),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = PureWhite)
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("TRIGGER MANUAL SOS", color = PureWhite, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
         Text(text = "SYSTEM SETTINGS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
 
+        if (appMode == AppMode.SENDER) {
+            Card(
+                modifier = Modifier.fillMaxWidth().clickable { onStopService() },
+                colors = CardDefaults.cardColors(containerColor = DarkCard),
+                shape = RoundedCornerShape(4.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
+            ) {
+                Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.PowerSettingsNew, contentDescription = null, tint = LightGrey)
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("SHUTDOWN SERVICE", color = TextPrimary)
+                }
+            }
+        }
+
         Card(
-            modifier = Modifier.fillMaxWidth().clickable { onStopService() },
+            modifier = Modifier.fillMaxWidth().clickable { onSwitchMode() },
             colors = CardDefaults.cardColors(containerColor = DarkCard),
             shape = RoundedCornerShape(4.dp),
             border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
         ) {
             Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.PowerSettingsNew, contentDescription = null, tint = LightGrey)
+                Icon(Icons.Default.SyncAlt, contentDescription = null, tint = LightGrey)
                 Spacer(modifier = Modifier.width(16.dp))
-                Text("SHUTDOWN SERVICE", color = TextPrimary)
+                Text(
+                    text = if (appMode == AppMode.SENDER) "SWITCH TO GUARDIAN MODE" else "SWITCH TO SENDER MODE",
+                    color = TextPrimary
+                )
             }
         }
     }
