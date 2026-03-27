@@ -25,6 +25,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.*
@@ -62,14 +63,18 @@ fun DashboardScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var showMonitoringScreen by remember { mutableStateOf(false) }
     var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
+    var contactToRename by remember { mutableStateOf<Contact?>(null) }
 
-    // Alert Popup Handling (Migrated to Sessions)
+    // Alert Popup Handling
     if (appMode == AppMode.GUARDIAN && state.activeEmergencySession != null) {
         val session = state.activeEmergencySession!!
+        val senderContact = state.contacts.find { it.id == session.senderId }
+        val displayName = senderContact?.name ?: "User ${session.senderId.take(4)}"
+
         AlertDialog(
             onDismissRequest = { viewModel.dismissSession(session.sessionId) },
             title = { Text("!!! EMERGENCY ALERT !!!", color = DangerRed, fontWeight = FontWeight.Bold) },
-            text = { Text("Sender ID: ${session.senderId} has triggered an SOS.", color = PureWhite) },
+            text = { Text("Sender: $displayName has triggered an SOS.", color = PureWhite) },
             confirmButton = {
                 Button(
                     onClick = { 
@@ -124,7 +129,10 @@ fun DashboardScreen(
                     when (selectedTab) {
                         0 -> { // Dashboard
                             if (appMode == AppMode.SENDER) {
-                                SenderDashboard(state)
+                                SenderDashboard(
+                                    state = state,
+                                    onContactClick = { contactToRename = it }
+                                )
                             } else {
                                 GuardianDashboard(
                                     state = state, 
@@ -133,6 +141,8 @@ fun DashboardScreen(
                                         if (contact.status == ContactStatus.EMERGENCY && contact.activeSession != null) {
                                             selectedMonitoringSession = contact.activeSession
                                             showMonitoringScreen = true
+                                        } else {
+                                            contactToRename = contact
                                         }
                                     }
                                 )
@@ -151,10 +161,75 @@ fun DashboardScreen(
             }
         }
     }
+
+    if (contactToRename != null) {
+        RenameDialog(
+            contact = contactToRename!!,
+            onDismiss = { contactToRename = null },
+            onConfirm = { newName ->
+                viewModel.renameContact(contactToRename!!.id, newName)
+                contactToRename = null
+            }
+        )
+    }
 }
 
 @Composable
-fun SenderDashboard(state: DashboardState) {
+fun RenameDialog(
+    contact: Contact,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf(contact.name) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            shape = RoundedCornerShape(4.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkGrey),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey)
+        ) {
+            Column(modifier = Modifier.padding(24.dp).fillMaxWidth()) {
+                Text("RENAME USER", style = MaterialTheme.typography.headlineSmall, color = PureWhite, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Update name for ${contact.id}", style = MaterialTheme.typography.bodySmall, color = LightGrey)
+                Spacer(modifier = Modifier.height(24.dp))
+
+                TextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Black,
+                        unfocusedContainerColor = Black,
+                        focusedTextColor = PureWhite,
+                        unfocusedTextColor = PureWhite,
+                        focusedIndicatorColor = PureWhite,
+                        unfocusedIndicatorColor = MediumGrey
+                    ),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(32.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("CANCEL", color = LightGrey) }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Button(
+                        onClick = { onConfirm(name) },
+                        colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text("SAVE", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SenderDashboard(state: DashboardState, onContactClick: (Contact) -> Unit) {
     Column {
         UserCodeCard(state.userCode)
         Spacer(modifier = Modifier.height(24.dp))
@@ -178,9 +253,10 @@ fun SenderDashboard(state: DashboardState) {
         }
         Spacer(modifier = Modifier.height(32.dp))
         ContactsSection(
-            title = "LINKED GUARDIANS", 
+            title = "LINKED GUARDIANS (Tap to rename)", 
             contacts = state.contacts, 
-            showAddButton = false
+            showAddButton = false,
+            onContactClick = onContactClick
         )
     }
 }
@@ -369,7 +445,7 @@ fun ContactItem(contact: Contact, onClick: () -> Unit) {
                 color = if (isEmergency) DangerRed else Color.Transparent,
                 shape = RoundedCornerShape(4.dp)
             )
-            .clickable(enabled = isEmergency) { onClick() }
+            .clickable { onClick() }
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

@@ -57,6 +57,7 @@ class UserManager(private val context: Context) {
         val user = User(
             userId = userCode,
             contacts = emptyList(),
+            contactNames = emptyMap(),
             fcmToken = fcmToken,
             createdAt = System.currentTimeMillis()
         )
@@ -118,6 +119,20 @@ class UserManager(private val context: Context) {
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(tag, "Error adding contact: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateContactName(contactId: String, name: String): Result<Unit> {
+        val myCode = getUserCodeSync() ?: return Result.failure(Exception("Not logged in"))
+        return try {
+            db.collection(SoSafeContract.Collections.USERS)
+                .document(myCode)
+                .update("${SoSafeContract.Fields.CONTACT_NAMES}.$contactId", name)
+                .await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(tag, "Error updating contact name: ${e.message}")
             Result.failure(e)
         }
     }

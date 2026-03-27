@@ -36,7 +36,6 @@ class SOSIncomingActivity : ComponentActivity() {
         val senderName = intent.getStringExtra("senderName") ?: "Someone"
 
         // BUG FIX: Cancel the notification immediately to stop the "System" siren
-        // This ensures only the Activity's MediaPlayer is playing the sound
         cancelNotification()
 
         showOnLockScreen()
@@ -62,6 +61,7 @@ class SOSIncomingActivity : ComponentActivity() {
                 ) {
                     MonitoringScreen(
                         session = session,
+                        displayName = senderName, // Pass custom name from notification
                         initialDelayMillis = 3000L,
                         onClose = { 
                             Log.d("SOS_AUDIT", "MONITORING_CLOSED: Closing activity.")
@@ -125,7 +125,6 @@ class SOSIncomingActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Ensure siren stops if user leaves activity
         stopSiren()
     }
 

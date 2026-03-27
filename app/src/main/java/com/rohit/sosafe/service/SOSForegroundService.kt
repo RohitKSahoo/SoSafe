@@ -70,6 +70,9 @@ class SOSForegroundService : Service() {
     
     // TRACKING: Prevent duplicate alerts for the same session
     private val notifiedSessions = mutableSetOf<String>()
+    
+    // Cached contact names for notifications
+    private var contactNames: Map<String, String> = emptyMap()
 
     companion object {
         const val ACTION_START_EMERGENCY = "ACTION_START_EMERGENCY"
@@ -134,7 +137,11 @@ class SOSForegroundService : Service() {
         notifiedSessions.add(sessionId)
         
         acquireWakeLock()
-        val notification = createFullScreenNotification(sessionId, senderId, senderName)
+        
+        // Use custom name if available in our local cache
+        val displayName = contactNames[senderId] ?: senderName
+        
+        val notification = createFullScreenNotification(sessionId, senderId, displayName)
         
         val alertNotificationId = sessionId.hashCode()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -179,6 +186,9 @@ class SOSForegroundService : Service() {
                 if (snapshot != null && snapshot.exists()) {
                     @Suppress("UNCHECKED_CAST")
                     val contacts = snapshot.get(SoSafeContract.Fields.CONTACTS) as? List<String> ?: emptyList()
+                    @Suppress("UNCHECKED_CAST")
+                    contactNames = snapshot.get(SoSafeContract.Fields.CONTACT_NAMES) as? Map<String, String> ?: emptyMap()
+                    
                     updateSosAlertListener(contacts)
                 }
             }
@@ -212,7 +222,6 @@ class SOSForegroundService : Service() {
                             )
                         }
                         DocumentChange.Type.REMOVED -> {
-                            // FIX: Cancel notification when session is no longer active
                             val sessionId = change.document.id
                             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                             notificationManager.cancel(sessionId.hashCode())

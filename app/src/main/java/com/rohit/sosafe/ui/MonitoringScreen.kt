@@ -41,6 +41,7 @@ import org.osmdroid.views.overlay.Marker
 @Composable
 fun MonitoringScreen(
     session: SosSession,
+    displayName: String = "",
     initialDelayMillis: Long = 0L,
     onClose: () -> Unit
 ) {
@@ -116,7 +117,7 @@ fun MonitoringScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Black)
-            .systemBarsPadding() // FIX: Added to prevent map and UI elements from overlapping with system bars
+            .systemBarsPadding() 
     ) {
         val mapView = remember { MapView(context) }
         val markerState = remember { mutableStateOf<Marker?>(null) }
@@ -151,7 +152,7 @@ fun MonitoringScreen(
                     if (markerState.value == null) {
                         markerState.value = Marker(view).apply {
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                            title = "SENDER LOCATION"
+                            title = displayName.ifBlank { "SENDER LOCATION" }
                             icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_mylocation)
                             view.overlays.add(this)
                         }
@@ -206,7 +207,18 @@ fun MonitoringScreen(
                 border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("USER ID: ${session.senderId}", color = PureWhite, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (displayName.isNotBlank()) displayName else "USER ID: ${session.senderId}", 
+                        color = PureWhite, 
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (displayName.isNotBlank()) {
+                        Text(
+                            text = "ID: ${session.senderId}", 
+                            color = LightGrey, 
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
                     
                     Row(verticalAlignment = Alignment.CenterVertically) {

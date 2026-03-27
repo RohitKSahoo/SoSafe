@@ -167,9 +167,10 @@ fun MainScreen(
     if (showAddContactDialog) {
         AddContactDialog(
             onDismiss = { showAddContactDialog = false },
-            onAdd = { code ->
+            onAdd = { code, name ->
                 viewModel.addContact(code) { result ->
                     if (result.isSuccess) {
+                        viewModel.renameContact(code, name)
                         showAddContactDialog = false
                     }
                 }

@@ -86,11 +86,13 @@ class DashboardViewModel(
                 if (snapshot != null && snapshot.exists()) {
                     @Suppress("UNCHECKED_CAST")
                     val contactCodes = snapshot.get(SoSafeContract.Fields.CONTACTS) as? List<String> ?: emptyList()
+                    @Suppress("UNCHECKED_CAST")
+                    val contactNames = snapshot.get(SoSafeContract.Fields.CONTACT_NAMES) as? Map<String, String> ?: emptyMap()
                     
                     val contacts = contactCodes.map { contactCode ->
                         Contact(
                             id = contactCode,
-                            name = "USER_${contactCode.take(4).uppercase()}",
+                            name = contactNames[contactCode] ?: "USER_${contactCode.take(4).uppercase()}",
                             status = ContactStatus.ONLINE,
                             lastActive = "RECENT"
                         )
@@ -181,19 +183,16 @@ class DashboardViewModel(
         _dashboardState.value = _dashboardState.value.copy(contacts = updatedContacts)
     }
 
-    fun refreshContacts(onComplete: (() -> Unit)? = null) {
-        // Now handled by observeUserContacts real-time listener.
-        // Keeping the function signature for backward compatibility if needed, 
-        // but it will just invoke the completion block.
-        onComplete?.invoke()
-    }
-
     fun addContact(code: String, onResult: (Result<Unit>) -> Unit) {
         viewModelScope.launch {
             val result = userManager.addContact(code, RoleManager.isGuardian())
-            // The listener (observeUserContacts) will automatically trigger 
-            // the UI update and session discovery restart.
             onResult(result)
+        }
+    }
+
+    fun renameContact(id: String, newName: String) {
+        viewModelScope.launch {
+            userManager.updateContactName(id, newName)
         }
     }
     

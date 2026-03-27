@@ -14,9 +14,11 @@ import com.rohit.sosafe.ui.theme.*
 @Composable
 fun AddContactDialog(
     onDismiss: () -> Unit,
-    onAdd: (String) -> Unit
+    onAdd: (String, String) -> Unit
 ) {
     var code by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var step by remember { mutableIntStateOf(1) } // 1: Code, 2: Name
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -33,34 +35,54 @@ fun AddContactDialog(
                     .fillMaxWidth()
             ) {
                 Text(
-                    text = "LINK NEW USER",
+                    text = if (step == 1) "LINK NEW USER" else "NAME THIS USER",
                     style = MaterialTheme.typography.headlineSmall,
                     color = PureWhite,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Enter the 8-character ID of the person you want to link with.",
+                    text = if (step == 1) 
+                        "Enter the 8-character ID of the person you want to link with."
+                        else "Give this person a recognizable name (e.g. Mom, Guardian 1).",
                     style = MaterialTheme.typography.bodySmall,
                     color = LightGrey
                 )
                 Spacer(modifier = Modifier.height(24.dp))
 
-                TextField(
-                    value = code,
-                    onValueChange = { if (it.length <= 8) code = it.uppercase() },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Black,
-                        unfocusedContainerColor = Black,
-                        focusedTextColor = PureWhite,
-                        unfocusedTextColor = PureWhite,
-                        focusedIndicatorColor = PureWhite,
-                        unfocusedIndicatorColor = MediumGrey
-                    ),
-                    placeholder = { Text("E.G. AB12CD34", color = MediumGrey) },
-                    singleLine = true
-                )
+                if (step == 1) {
+                    TextField(
+                        value = code,
+                        onValueChange = { if (it.length <= 8) code = it.uppercase() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Black,
+                            unfocusedContainerColor = Black,
+                            focusedTextColor = PureWhite,
+                            unfocusedTextColor = PureWhite,
+                            focusedIndicatorColor = PureWhite,
+                            unfocusedIndicatorColor = MediumGrey
+                        ),
+                        placeholder = { Text("E.G. AB12CD34", color = MediumGrey) },
+                        singleLine = true
+                    )
+                } else {
+                    TextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Black,
+                            unfocusedContainerColor = Black,
+                            focusedTextColor = PureWhite,
+                            unfocusedTextColor = PureWhite,
+                            focusedIndicatorColor = PureWhite,
+                            unfocusedIndicatorColor = MediumGrey
+                        ),
+                        placeholder = { Text("Enter Name", color = MediumGrey) },
+                        singleLine = true
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(32.dp))
 
@@ -73,8 +95,11 @@ fun AddContactDialog(
                     }
                     Spacer(modifier = Modifier.width(16.dp))
                     Button(
-                        onClick = { if (code.length == 8) onAdd(code) },
-                        enabled = code.length == 8,
+                        onClick = { 
+                            if (step == 1) step = 2
+                            else onAdd(code, name.ifBlank { "User ${code.take(4)}" })
+                        },
+                        enabled = if (step == 1) code.length == 8 else true,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = PureWhite,
                             contentColor = Black,
@@ -83,7 +108,7 @@ fun AddContactDialog(
                         ),
                         shape = RoundedCornerShape(4.dp)
                     ) {
-                        Text("LINK USER", fontWeight = FontWeight.Bold)
+                        Text(if (step == 1) "NEXT" else "CONFIRM", fontWeight = FontWeight.Bold)
                     }
                 }
             }

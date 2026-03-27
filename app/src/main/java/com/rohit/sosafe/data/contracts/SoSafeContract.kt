@@ -19,6 +19,7 @@ object SoSafeContract {
         // User document fields
         const val USER_ID = "userId"
         const val CONTACTS = "contacts"
+        const val CONTACT_NAMES = "contactNames" // New field for mapping ID -> Custom Name
         const val FCM_TOKEN = "fcmToken"
         const val CREATED_AT = "createdAt"
         
@@ -61,6 +62,7 @@ object SoSafeContract {
 data class User(
     val userId: String = "",
     val contacts: List<String> = emptyList(),
+    val contactNames: Map<String, String> = emptyMap(), // Mapping ID -> Custom Name
     val fcmToken: String = "",
     val createdAt: Long = 0L
 )
