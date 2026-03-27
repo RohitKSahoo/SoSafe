@@ -52,6 +52,7 @@ class DashboardViewModel(
     
     private val db = Firebase.firestore
     private var sessionListenerJob: ListenerRegistration? = null
+    private var userListenerJob: ListenerRegistration? = null
 
     init {
         loadInitialData()
@@ -67,13 +68,42 @@ class DashboardViewModel(
 
             _dashboardState.value = _dashboardState.value.copy(userCode = formattedCode)
             
-            // First load contacts, then start discovery if we are a guardian
-            refreshContacts {
-                if (RoleManager.isGuardian()) {
-                    startSessionDiscovery()
+            // Start real-time observation of user document for contact changes
+            observeUserContacts(code)
+        }
+    }
+
+    private fun observeUserContacts(userCode: String) {
+        userListenerJob?.remove()
+        userListenerJob = db.collection(SoSafeContract.Collections.USERS)
+            .document(userCode)
+            .addSnapshotListener { snapshot, e ->
+                if (e != null) {
+                    Log.e("SOS_AUDIT", "USER_LISTENER_ERROR: ${e.message}")
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null && snapshot.exists()) {
+                    @Suppress("UNCHECKED_CAST")
+                    val contactCodes = snapshot.get(SoSafeContract.Fields.CONTACTS) as? List<String> ?: emptyList()
+                    
+                    val contacts = contactCodes.map { contactCode ->
+                        Contact(
+                            id = contactCode,
+                            name = "USER_${contactCode.take(4).uppercase()}",
+                            status = ContactStatus.ONLINE,
+                            lastActive = "RECENT"
+                        )
+                    }
+                    
+                    _dashboardState.value = _dashboardState.value.copy(contacts = contacts)
+                    
+                    // Re-evaluate session discovery if contacts changed
+                    if (RoleManager.isGuardian()) {
+                        startSessionDiscovery()
+                    }
                 }
             }
-        }
     }
 
     private fun observeServiceState() {
@@ -100,6 +130,8 @@ class DashboardViewModel(
         val contactIds = _dashboardState.value.contacts.map { it.id }
         if (contactIds.isEmpty()) {
             Log.d("SOS_AUDIT", "Discovery: No contacts to listen for.")
+            sessionListenerJob?.remove()
+            _dashboardState.value = _dashboardState.value.copy(activeEmergencySession = null)
             return
         }
 
@@ -150,31 +182,17 @@ class DashboardViewModel(
     }
 
     fun refreshContacts(onComplete: (() -> Unit)? = null) {
-        viewModelScope.launch {
-            val contactCodes = userManager.getContacts()
-            val contacts = contactCodes.map { contactCode ->
-                Contact(
-                    id = contactCode,
-                    name = "USER_${contactCode.take(4).uppercase()}",
-                    status = ContactStatus.ONLINE,
-                    lastActive = "RECENT"
-                )
-            }
-            _dashboardState.value = _dashboardState.value.copy(contacts = contacts)
-            onComplete?.invoke()
-        }
+        // Now handled by observeUserContacts real-time listener.
+        // Keeping the function signature for backward compatibility if needed, 
+        // but it will just invoke the completion block.
+        onComplete?.invoke()
     }
 
     fun addContact(code: String, onResult: (Result<Unit>) -> Unit) {
         viewModelScope.launch {
             val result = userManager.addContact(code, RoleManager.isGuardian())
-            if (result.isSuccess) {
-                refreshContacts {
-                    if (RoleManager.isGuardian()) {
-                        startSessionDiscovery() // Restart discovery with new contact list
-                    }
-                }
-            }
+            // The listener (observeUserContacts) will automatically trigger 
+            // the UI update and session discovery restart.
             onResult(result)
         }
     }
@@ -190,5 +208,6 @@ class DashboardViewModel(
     override fun onCleared() {
         super.onCleared()
         sessionListenerJob?.remove()
+        userListenerJob?.remove()
     }
 }

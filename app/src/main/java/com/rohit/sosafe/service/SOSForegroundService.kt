@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -29,6 +30,7 @@ import com.rohit.sosafe.data.AppModeManager
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.data.UserManager
 import com.rohit.sosafe.data.contracts.*
+import com.rohit.sosafe.ui.SOSIncomingActivity
 import com.rohit.sosafe.utils.CloudinaryUploader
 import com.rohit.sosafe.utils.SOSTriggerManager
 import com.rohit.sosafe.utils.ServiceState
@@ -39,6 +41,7 @@ import java.io.File
 class SOSForegroundService : Service() {
 
     private val CHANNEL_ID = "SOS_SERVICE_CHANNEL"
+    private val GUARDIAN_CHANNEL_ID = "SOS_GUARDIAN_CHANNEL"
     private val NOTIFICATION_ID = 1
     private var sosTriggerManager: SOSTriggerManager? = null
     private var isEmergencyActive = false
@@ -59,9 +62,12 @@ class SOSForegroundService : Service() {
     private val CHUNK_DURATION_MS = 3000L 
 
     private var sessionListenerRegistration: ListenerRegistration? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
         const val ACTION_START_EMERGENCY = "ACTION_START_EMERGENCY"
+        const val ACTION_STOP_EMERGENCY = "ACTION_STOP_EMERGENCY"
+        const val ACTION_GUARDIAN_SOS = "ACTION_GUARDIAN_SOS"
     }
 
     override fun onCreate() {
@@ -79,7 +85,7 @@ class SOSForegroundService : Service() {
             RoleManager.myUserId = myId
         }
 
-        createNotificationChannel()
+        createNotificationChannels()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         
         if (RoleManager.isSender()) {
@@ -90,16 +96,45 @@ class SOSForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (RoleManager.isSender()) {
-            if (intent?.action == ACTION_START_EMERGENCY) {
-                startEmergencyMode()
-            } else {
-                startGuardianMode()
+        when (intent?.action) {
+            ACTION_GUARDIAN_SOS -> {
+                val sId = intent.getStringExtra("sessionId") ?: ""
+                val sName = intent.getStringExtra("senderName") ?: "Someone"
+                val sUserId = intent.getStringExtra("senderId") ?: ""
+                startGuardianSOSSession(sId, sUserId, sName)
             }
-        } else if (RoleManager.isGuardian()) {
-            startGuardianSessionDiscovery()
+            ACTION_START_EMERGENCY -> {
+                if (RoleManager.isSender()) {
+                    startEmergencyMode()
+                }
+            }
+            ACTION_STOP_EMERGENCY -> {
+                stopEmergencyMode()
+            }
+            else -> {
+                if (RoleManager.isSender()) {
+                    startGuardianMode()
+                } else if (RoleManager.isGuardian()) {
+                    startGuardianSessionDiscovery()
+                }
+            }
         }
         return START_STICKY
+    }
+
+    private fun startGuardianSOSSession(sessionId: String, senderId: String, senderName: String) {
+        acquireWakeLock()
+        val notification = createFullScreenNotification(sessionId, senderId, senderName)
+        startForeground(NOTIFICATION_ID, notification)
+        ServiceState.setGuardianActive(true)
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SoSafe:SOSWakeLock")
+            wakeLock?.acquire(10 * 60 * 1000L /*10 minutes*/)
+        }
     }
 
     private fun startGuardianMode() {
@@ -171,6 +206,28 @@ class SOSForegroundService : Service() {
         manager.notify(session.sessionId.hashCode(), notification)
     }
 
+    private fun createFullScreenNotification(sessionId: String, senderId: String, senderName: String): Notification {
+        val fullScreenIntent = Intent(this, SOSIncomingActivity::class.java).apply {
+            putExtra("sessionId", sessionId)
+            putExtra("senderId", senderId)
+            putExtra("senderName", senderName)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
+        }
+        val fullScreenPendingIntent = PendingIntent.getActivity(this, 0, fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        return NotificationCompat.Builder(this, GUARDIAN_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_report_image)
+            .setContentTitle("INCOMING SOS ALERT")
+            .setContentText("$senderName is in danger!")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setVibrate(longArrayOf(0, 500, 200, 500))
+            .build()
+    }
+
     private fun startEmergencyMode() {
         if (isEmergencyActive) return
         
@@ -207,6 +264,37 @@ class SOSForegroundService : Service() {
                 Log.e("SOS_AUDIT", "SESSION_CREATE_FAILED: ${e.message}")
             }
         }
+    }
+
+    private fun stopEmergencyMode() {
+        if (!isEmergencyActive) return
+        
+        val sessionToClose = sessionId
+        isEmergencyActive = false
+        ServiceState.setEmergencyActive(false)
+        
+        // Stop audio and location streaming immediately
+        locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
+        audioHandler.removeCallbacksAndMessages(null)
+        mediaRecorder?.apply {
+            try { stop() } catch(e: Exception) {}
+            release()
+        }
+        mediaRecorder = null
+        
+        // Update Firestore to END the session
+        serviceScope.launch {
+            try {
+                db.collection(SoSafeContract.Collections.SESSIONS).document(sessionToClose)
+                    .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED).await()
+                Log.d("SOS_AUDIT", "SESSION_ENDED_BY_USER: $sessionToClose")
+            } catch (e: Exception) {
+                Log.e("SOS_AUDIT", "SESSION_END_FAILED: ${e.message}")
+            }
+        }
+        
+        // Return to normal protection mode notification
+        startGuardianMode()
     }
 
     @SuppressLint("MissingPermission")
@@ -288,12 +376,25 @@ class SOSForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        serviceScope.launch {
-            if (isEmergencyActive && sessionId.isNotEmpty()) {
-                db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-                    .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED).await()
+        // Capture final states for cleanup coroutine
+        val finalSessionId = sessionId
+        val wasEmergencyActive = isEmergencyActive
+        
+        // We use a non-cancelled scope (GlobalScope) for the absolute final 
+        // network call because the service is being destroyed.
+        if (wasEmergencyActive && finalSessionId.isNotEmpty()) {
+            @OptIn(DelicateCoroutinesApi::class)
+            GlobalScope.launch(Dispatchers.IO) {
+                try {
+                    Firebase.firestore.collection(SoSafeContract.Collections.SESSIONS)
+                        .document(finalSessionId)
+                        .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED)
+                        .await()
+                    Log.d("SOS_AUDIT", "FINAL_CLEANUP_SUCCESS: $finalSessionId")
+                } catch (e: Exception) {
+                    Log.e("SOS_AUDIT", "FINAL_CLEANUP_FAILED: ${e.message}")
+                }
             }
-            serviceScope.cancel()
         }
         
         isEmergencyActive = false
@@ -305,6 +406,11 @@ class SOSForegroundService : Service() {
         mediaRecorder?.release()
         sessionListenerRegistration?.remove()
         
+        if (wakeLock?.isHeld == true) {
+            wakeLock?.release()
+        }
+        
+        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -318,10 +424,21 @@ class SOSForegroundService : Service() {
             .setOngoing(true).setContentIntent(pendingIntent).build()
     }
 
-    private fun createNotificationChannel() {
+    private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "SoSafe Service", NotificationManager.IMPORTANCE_HIGH)
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            
+            val serviceChannel = NotificationChannel(CHANNEL_ID, "SoSafe Service", NotificationManager.IMPORTANCE_HIGH)
+            manager.createNotificationChannel(serviceChannel)
+            
+            val guardianChannel = NotificationChannel(GUARDIAN_CHANNEL_ID, "Emergency Alerts", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Critical alerts for incoming SOS calls"
+                enableLights(true)
+                enableVibration(true)
+                setBypassDnd(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            manager.createNotificationChannel(guardianChannel)
         }
     }
 }
