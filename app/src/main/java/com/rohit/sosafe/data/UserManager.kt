@@ -5,6 +5,7 @@ import android.util.Log
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
+import com.google.firebase.messaging.FirebaseMessaging
 import com.rohit.sosafe.data.contracts.SoSafeContract
 import com.rohit.sosafe.data.contracts.User
 import kotlinx.coroutines.tasks.await
@@ -33,6 +34,9 @@ class UserManager(private val context: Context) {
             userCode = generateUniqueUserCode()
             sharedPrefs.edit().putString(userCodeKey, userCode).apply()
             storeUserCodeInFirestore(userCode)
+        } else {
+            // Even if user exists, refresh the FCM token in Firestore
+            updateFcmToken(userCode)
         }
         return userCode
     }
@@ -44,9 +48,16 @@ class UserManager(private val context: Context) {
     }
 
     private suspend fun storeUserCodeInFirestore(userCode: String) {
+        val fcmToken = try {
+            FirebaseMessaging.getInstance().token.await()
+        } catch (e: Exception) {
+            ""
+        }
+
         val user = User(
             userId = userCode,
             contacts = emptyList(),
+            fcmToken = fcmToken,
             createdAt = System.currentTimeMillis()
         )
         try {
@@ -57,6 +68,19 @@ class UserManager(private val context: Context) {
             Log.d(tag, "User code '$userCode' stored in Firestore.")
         } catch (e: Exception) {
             Log.e(tag, "Error storing user code: ${e.message}")
+        }
+    }
+
+    suspend fun updateFcmToken(userCode: String) {
+        try {
+            val token = FirebaseMessaging.getInstance().token.await()
+            db.collection(SoSafeContract.Collections.USERS)
+                .document(userCode)
+                .update(SoSafeContract.Fields.FCM_TOKEN, token)
+                .await()
+            Log.d(tag, "FCM Token updated successfully")
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to update FCM token: ${e.message}")
         }
     }
 

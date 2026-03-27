@@ -31,6 +31,7 @@ import com.google.firebase.ktx.Firebase
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.data.contracts.*
 import com.rohit.sosafe.ui.theme.*
+import kotlinx.coroutines.delay
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -40,6 +41,7 @@ import org.osmdroid.views.overlay.Marker
 @Composable
 fun MonitoringScreen(
     session: SosSession,
+    initialDelayMillis: Long = 0L,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -52,9 +54,8 @@ fun MonitoringScreen(
     Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
     Configuration.getInstance().userAgentValue = context.packageName
 
-    if (!RoleManager.isGuardian()) return
-
     // STEP 4: FLATTENED LOCATION SYSTEM (Document Listener)
+    // Also handles auto-closing when session ends
     DisposableEffect(session.sessionId) {
         val registration = db.collection(SoSafeContract.Collections.SESSIONS)
             .document(session.sessionId)
@@ -65,12 +66,22 @@ fun MonitoringScreen(
                 }
 
                 if (snapshot != null && snapshot.exists()) {
-                    Log.d("SOS_AUDIT", "SNAPSHOT_RECEIVED (Session)")
                     val updatedSession = snapshot.toObject(SosSession::class.java)
+                    
+                    // AUTO-CLOSE Logic
+                    if (updatedSession?.status == SoSafeContract.Status.ENDED) {
+                        Log.d("SOS_AUDIT", "SESSION_ENDED: Closing monitoring screen.")
+                        onClose()
+                        return@addSnapshotListener
+                    }
+
                     if (updatedSession?.lastLocation != null) {
                         lastLocation = updatedSession.lastLocation
                         Log.d("SOS_AUDIT", "LOCATION_WRITE (Received): ${lastLocation?.latitude},${lastLocation?.longitude}")
                     }
+                } else if (snapshot != null && !snapshot.exists()) {
+                    // Session deleted or finished
+                    onClose()
                 }
             }
         onDispose { registration.remove() }
@@ -101,7 +112,12 @@ fun MonitoringScreen(
         onDispose { registration.remove() }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Black)) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Black)
+            .systemBarsPadding() // FIX: Added to prevent map and UI elements from overlapping with system bars
+    ) {
         val mapView = remember { MapView(context) }
         val markerState = remember { mutableStateOf<Marker?>(null) }
 
@@ -205,7 +221,7 @@ fun MonitoringScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    AudioQueuePlayer(audioQueue)
+                    AudioQueuePlayer(audioQueue, initialDelayMillis)
                 }
             }
         }
@@ -213,12 +229,20 @@ fun MonitoringScreen(
 }
 
 @Composable
-fun AudioQueuePlayer(queue: MutableList<AudioChunk>) {
+fun AudioQueuePlayer(queue: MutableList<AudioChunk>, initialDelayMillis: Long = 0L) {
     val mediaPlayer = remember { MediaPlayer() }
     var isCurrentlyPlaying by remember { mutableStateOf(false) }
+    var isDelayFinished by remember { mutableStateOf(initialDelayMillis == 0L) }
 
-    LaunchedEffect(queue.size, isCurrentlyPlaying) {
-        if (!isCurrentlyPlaying && queue.isNotEmpty()) {
+    if (initialDelayMillis > 0) {
+        LaunchedEffect(Unit) {
+            delay(initialDelayMillis)
+            isDelayFinished = true
+        }
+    }
+
+    LaunchedEffect(queue.size, isCurrentlyPlaying, isDelayFinished) {
+        if (isDelayFinished && !isCurrentlyPlaying && queue.isNotEmpty()) {
             val nextChunk = queue.removeAt(0)
             try {
                 isCurrentlyPlaying = true
@@ -256,14 +280,15 @@ fun AudioQueuePlayer(queue: MutableList<AudioChunk>) {
         Icon(
             imageVector = Icons.Default.Mic, 
             contentDescription = null, 
-            tint = if (isCurrentlyPlaying) DangerRed else SuccessGreen
+            tint = if (isCurrentlyPlaying) DangerRed else if (!isDelayFinished) LightGrey else SuccessGreen
         )
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = if (isCurrentlyPlaying) "PLAYING LIVE AUDIO FEED..." 
+            text = if (!isDelayFinished) "INITIALIZING SECURE FEED..."
+                   else if (isCurrentlyPlaying) "PLAYING LIVE AUDIO FEED..." 
                    else if (queue.isNotEmpty()) "BUFFERING (${queue.size} CHUNKS)..."
                    else "AWAITING AUDIO FEED",
-            color = if (isCurrentlyPlaying) DangerRed else SuccessGreen,
+            color = if (isCurrentlyPlaying) DangerRed else if (!isDelayFinished) LightGrey else SuccessGreen,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold
         )

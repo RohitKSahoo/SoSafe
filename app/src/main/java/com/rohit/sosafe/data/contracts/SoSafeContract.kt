@@ -19,6 +19,7 @@ object SoSafeContract {
         // User document fields
         const val USER_ID = "userId"
         const val CONTACTS = "contacts"
+        const val FCM_TOKEN = "fcmToken"
         const val CREATED_AT = "createdAt"
         
         // Session fields
@@ -60,6 +61,7 @@ object SoSafeContract {
 data class User(
     val userId: String = "",
     val contacts: List<String> = emptyList(),
+    val fcmToken: String = "",
     val createdAt: Long = 0L
 )
 
