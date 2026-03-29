@@ -8,7 +8,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -30,6 +34,7 @@ import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.data.StreamingMode
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.*
+import kotlinx.coroutines.launch
 
 @Composable
 fun GridBackground(modifier: Modifier = Modifier) {
@@ -61,7 +66,9 @@ fun DashboardScreen(
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsState()
-    var selectedTab by remember { mutableIntStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { 2 })
+    val coroutineScope = rememberCoroutineScope()
+    
     var showMonitoringScreen by remember { mutableStateOf(false) }
     var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
     var contactToRename by remember { mutableStateOf<Contact?>(null) }
@@ -114,50 +121,61 @@ fun DashboardScreen(
                 topBar = { TopBar(state.isProtectionActive, appMode, onStopService) },
                 bottomBar = { 
                     BottomNav(
-                        selectedTab = selectedTab,
-                        onTabSelected = { selectedTab = it }
+                        selectedTab = pagerState.currentPage,
+                        onTabSelected = { page ->
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(page)
+                            }
+                        }
                     ) 
                 },
                 containerColor = Color.Transparent,
                 modifier = modifier.fillMaxSize()
             ) { padding ->
-                Column(
+                HorizontalPager(
+                    state = pagerState,
                     modifier = Modifier
                         .padding(padding)
-                        .padding(16.dp)
-                        .fillMaxSize()
-                ) {
-                    when (selectedTab) {
-                        0 -> { // Dashboard
-                            if (appMode == AppMode.SENDER) {
-                                SenderDashboard(
-                                    state = state,
-                                    onContactClick = { contactToRename = it }
-                                )
-                            } else {
-                                GuardianDashboard(
-                                    state = state, 
-                                    onAddContactClick = onAddContactClick,
-                                    onContactClick = { contact ->
-                                        if (contact.status == ContactStatus.EMERGENCY && contact.activeSession != null) {
-                                            selectedMonitoringSession = contact.activeSession
-                                            showMonitoringScreen = true
-                                        } else {
-                                            contactToRename = contact
+                        .fillMaxSize(),
+                    verticalAlignment = Alignment.Top
+                ) { page ->
+                    Column(
+                        modifier = Modifier
+                            .padding(16.dp)
+                            .fillMaxSize()
+                    ) {
+                        when (page) {
+                            0 -> { // Dashboard
+                                if (appMode == AppMode.SENDER) {
+                                    SenderDashboard(
+                                        state = state,
+                                        onContactClick = { contactToRename = it }
+                                    )
+                                } else {
+                                    GuardianDashboard(
+                                        state = state, 
+                                        onAddContactClick = onAddContactClick,
+                                        onContactClick = { contact ->
+                                            if (contact.status == ContactStatus.EMERGENCY && contact.activeSession != null) {
+                                                selectedMonitoringSession = contact.activeSession
+                                                showMonitoringScreen = true
+                                            } else {
+                                                contactToRename = contact
+                                            }
                                         }
-                                    }
+                                    )
+                                }
+                            }
+                            1 -> { // Settings
+                                SystemConfigSection(
+                                    appMode = appMode,
+                                    streamingMode = state.streamingMode,
+                                    onStreamingModeChange = { viewModel.setStreamingMode(it) },
+                                    onTriggerSOS = onTriggerSOS,
+                                    onStopService = onStopService,
+                                    onSwitchMode = onSwitchMode
                                 )
                             }
-                        }
-                        1 -> { // Settings
-                            SystemConfigSection(
-                                appMode = appMode,
-                                streamingMode = state.streamingMode,
-                                onStreamingModeChange = { viewModel.setStreamingMode(it) },
-                                onTriggerSOS = onTriggerSOS,
-                                onStopService = onStopService,
-                                onSwitchMode = onSwitchMode
-                            )
                         }
                     }
                 }
@@ -233,7 +251,7 @@ fun RenameDialog(
 
 @Composable
 fun SenderDashboard(state: DashboardState, onContactClick: (Contact) -> Unit) {
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         UserCodeCard(state.userCode)
         Spacer(modifier = Modifier.height(24.dp))
         Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
@@ -507,7 +525,12 @@ fun SystemConfigSection(
     onStopService: () -> Unit, 
     onSwitchMode: () -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
         if (appMode == AppMode.SENDER) {
             Text(text = "EMERGENCY ACTIONS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
             Card(
