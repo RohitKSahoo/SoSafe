@@ -25,6 +25,7 @@ import com.rohit.sosafe.ui.DashboardViewModel
 import com.rohit.sosafe.ui.DashboardViewModelFactory
 import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.data.AppModeManager
+import com.rohit.sosafe.data.StreamingModeManager
 import com.rohit.sosafe.ui.ModeSelectionScreen
 import com.rohit.sosafe.ui.AddContactDialog
 import com.rohit.sosafe.data.RoleManager
@@ -35,6 +36,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var userManager: UserManager
     private lateinit var sosTriggerManager: SOSTriggerManager
     private lateinit var appModeManager: AppModeManager
+    private lateinit var streamingModeManager: StreamingModeManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +44,7 @@ class MainActivity : ComponentActivity() {
 
         userManager = UserManager(applicationContext)
         appModeManager = AppModeManager(applicationContext)
+        streamingModeManager = StreamingModeManager(applicationContext)
         sosTriggerManager = SOSTriggerManager(this)
         
         // Initialize RoleManager
@@ -71,7 +74,7 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     val viewModel: DashboardViewModel = viewModel(
-                        factory = DashboardViewModelFactory(userManager, appModeManager)
+                        factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager)
                     )
                     
                     MainScreen(

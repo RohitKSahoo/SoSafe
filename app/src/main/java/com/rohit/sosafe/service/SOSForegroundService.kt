@@ -29,14 +29,13 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
 import com.rohit.sosafe.MainActivity
-import com.rohit.sosafe.data.AppModeManager
-import com.rohit.sosafe.data.RoleManager
-import com.rohit.sosafe.data.UserManager
+import com.rohit.sosafe.data.*
 import com.rohit.sosafe.data.contracts.*
 import com.rohit.sosafe.ui.SOSIncomingActivity
 import com.rohit.sosafe.utils.CloudinaryUploader
 import com.rohit.sosafe.utils.SOSTriggerManager
 import com.rohit.sosafe.utils.ServiceState
+import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.tasks.await
 import java.io.File
@@ -68,6 +67,9 @@ class SOSForegroundService : Service() {
     private var userListenerRegistration: ListenerRegistration? = null
     private var wakeLock: PowerManager.WakeLock? = null
     
+    private var webrtcManager: WebRTCManager? = null
+    private lateinit var streamingModeManager: StreamingModeManager
+    
     // TRACKING: Prevent duplicate alerts for the same session
     private val notifiedSessions = mutableSetOf<String>()
     
@@ -90,6 +92,7 @@ class SOSForegroundService : Service() {
         }
         
         userManager = UserManager(applicationContext)
+        streamingModeManager = StreamingModeManager(applicationContext)
         val myId = userManager.getUserCodeSync()
         if (myId != null) {
             RoleManager.myUserId = myId
@@ -273,7 +276,9 @@ class SOSForegroundService : Service() {
         audioSequence = 0
         ServiceState.setEmergencyActive(true)
         
-        val notification = createNotification("!!! EMERGENCY SOS ACTIVE !!!", "Broadcasting alerts, location and audio.")
+        val mode = streamingModeManager.getStreamingMode()
+        
+        val notification = createNotification("!!! EMERGENCY SOS ACTIVE !!!", "Broadcasting alerts, location and audio ($mode).")
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIFICATION_ID, notification)
         
         serviceScope.launch {
@@ -284,24 +289,43 @@ class SOSForegroundService : Service() {
                 SoSafeContract.Fields.SENDER_ID to myId,
                 SoSafeContract.Fields.STATUS to SoSafeContract.Status.ACTIVE,
                 SoSafeContract.Fields.STARTED_AT to FieldValue.serverTimestamp(),
-                SoSafeContract.Fields.LAST_UPDATED_AT to FieldValue.serverTimestamp()
+                SoSafeContract.Fields.LAST_UPDATED_AT to FieldValue.serverTimestamp(),
+                SoSafeContract.Fields.STREAMING_MODE to mode.name
             )
 
             try {
                 db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
                     .set(sessionData).await()
                 
-                Log.d("SOS_AUDIT", "SESSION_CREATED: $sessionId")
+                Log.d("SOS_AUDIT", "SESSION_CREATED: $sessionId | MODE: $mode")
                 notifyGuardiansOfSOS(sessionId, myId)
 
                 withContext(Dispatchers.Main) {
                     startLocationStreaming()
-                    startAudioChunking()
+                    
+                    if (mode == StreamingMode.HYBRID || mode == StreamingMode.CHUNK_ONLY) {
+                        startAudioChunking()
+                    }
+                    
+                    if (mode == StreamingMode.HYBRID || mode == StreamingMode.WEBRTC_ONLY) {
+                        startWebRTC()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("SOS_AUDIT", "SESSION_CREATE_FAILED: ${e.message}")
             }
         }
+    }
+
+    private fun startWebRTC() {
+        webrtcManager = WebRTCManager(
+            context = this,
+            sessionId = sessionId,
+            onConnectionStateChange = { state ->
+                Log.d("SOS_AUDIT", "WebRTC State: $state")
+            }
+        )
+        webrtcManager?.startSender()
     }
 
     private fun notifyGuardiansOfSOS(sessionId: String, myId: String) {
@@ -339,6 +363,9 @@ class SOSForegroundService : Service() {
             release()
         }
         mediaRecorder = null
+        
+        webrtcManager?.stop()
+        webrtcManager = null
         
         serviceScope.launch {
             try {
@@ -454,6 +481,7 @@ class SOSForegroundService : Service() {
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
         audioHandler.removeCallbacksAndMessages(null)
         mediaRecorder?.release()
+        webrtcManager?.stop()
         sessionListenerRegistration?.remove()
         userListenerRegistration?.remove()
         

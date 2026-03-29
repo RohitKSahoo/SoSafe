@@ -6,10 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
-import com.rohit.sosafe.data.AppMode
-import com.rohit.sosafe.data.AppModeManager
-import com.rohit.sosafe.data.RoleManager
-import com.rohit.sosafe.data.UserManager
+import com.rohit.sosafe.data.*
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.data.contracts.SoSafeContract
 import com.rohit.sosafe.utils.ServiceState
@@ -39,12 +36,14 @@ data class DashboardState(
     val contacts: List<Contact> = emptyList(),
     val isEmergency: Boolean = false,
     val activeEmergencySession: SosSession? = null,
-    val dismissedSessions: Set<String> = emptySet()
+    val dismissedSessions: Set<String> = emptySet(),
+    val streamingMode: StreamingMode = StreamingMode.HYBRID
 )
 
 class DashboardViewModel(
     private val userManager: UserManager,
-    private val appModeManager: AppModeManager
+    private val appModeManager: AppModeManager,
+    private val streamingModeManager: StreamingModeManager
 ) : ViewModel() {
 
     private val _dashboardState = MutableStateFlow(DashboardState())
@@ -66,11 +65,19 @@ class DashboardViewModel(
                 "${code.substring(0, 3)}-${code.substring(3)}"
             } else code
 
-            _dashboardState.value = _dashboardState.value.copy(userCode = formattedCode)
+            _dashboardState.value = _dashboardState.value.copy(
+                userCode = formattedCode,
+                streamingMode = streamingModeManager.getStreamingMode()
+            )
             
             // Start real-time observation of user document for contact changes
             observeUserContacts(code)
         }
+    }
+
+    fun setStreamingMode(mode: StreamingMode) {
+        streamingModeManager.setStreamingMode(mode)
+        _dashboardState.value = _dashboardState.value.copy(streamingMode = mode)
     }
 
     private fun observeUserContacts(userCode: String) {

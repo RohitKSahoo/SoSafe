@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.rohit.sosafe.data.AppMode
+import com.rohit.sosafe.data.StreamingMode
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.*
 
@@ -151,6 +152,8 @@ fun DashboardScreen(
                         1 -> { // Settings
                             SystemConfigSection(
                                 appMode = appMode,
+                                streamingMode = state.streamingMode,
+                                onStreamingModeChange = { viewModel.setStreamingMode(it) },
                                 onTriggerSOS = onTriggerSOS,
                                 onStopService = onStopService,
                                 onSwitchMode = onSwitchMode
@@ -268,8 +271,6 @@ fun GuardianDashboard(
     onContactClick: (Contact) -> Unit
 ) {
     Column {
-        Text("MY PROTECTED USERS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-        Spacer(modifier = Modifier.height(16.dp))
         ContactsSection(
             title = "PROTECTED USERS", 
             contacts = state.contacts, 
@@ -498,7 +499,14 @@ fun ContactItem(contact: Contact, onClick: () -> Unit) {
 }
 
 @Composable
-fun SystemConfigSection(appMode: AppMode, onTriggerSOS: () -> Unit, onStopService: () -> Unit, onSwitchMode: () -> Unit) {
+fun SystemConfigSection(
+    appMode: AppMode, 
+    streamingMode: StreamingMode,
+    onStreamingModeChange: (StreamingMode) -> Unit,
+    onTriggerSOS: () -> Unit, 
+    onStopService: () -> Unit, 
+    onSwitchMode: () -> Unit
+) {
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         if (appMode == AppMode.SENDER) {
             Text(text = "EMERGENCY ACTIONS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
@@ -511,6 +519,34 @@ fun SystemConfigSection(appMode: AppMode, onTriggerSOS: () -> Unit, onStopServic
                     Icon(Icons.Default.Warning, contentDescription = null, tint = PureWhite)
                     Spacer(modifier = Modifier.width(16.dp))
                     Text("TRIGGER MANUAL SOS", color = PureWhite, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        Text(text = "DEBUG: AUDIO STREAMING MODE", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = DarkCard),
+            shape = RoundedCornerShape(4.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                StreamingMode.entries.forEach { mode ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onStreamingModeChange(mode) }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = streamingMode == mode,
+                            onClick = { onStreamingModeChange(mode) },
+                            colors = RadioButtonDefaults.colors(selectedColor = PureWhite, unselectedColor = LightGrey)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = mode.label, color = if (streamingMode == mode) PureWhite else LightGrey)
+                    }
                 }
             }
         }

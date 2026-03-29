@@ -31,6 +31,12 @@ object SoSafeContract {
         const val STARTED_AT = "startedAt"
         const val LAST_LOCATION = "lastLocation"
         const val LAST_UPDATED_AT = "lastUpdatedAt"
+        const val STREAMING_MODE = "streamingMode"
+        
+        // WebRTC fields
+        const val WEBRTC_OFFER = "webrtcOffer"
+        const val WEBRTC_ANSWER = "webrtcAnswer"
+        const val ICE_CANDIDATES = "iceCandidates"
         
         // Audio Chunk fields
         const val FILE_URL = "fileUrl"
@@ -74,7 +80,11 @@ data class SosSession(
     val status: String = SoSafeContract.Status.ACTIVE,
     val startedAt: Any? = null,
     val lastLocation: GeoPoint? = null,
-    val lastUpdatedAt: Any? = null
+    val lastUpdatedAt: Any? = null,
+    val streamingMode: String = "HYBRID",
+    val webrtcOffer: String? = null,
+    val webrtcAnswer: String? = null,
+    val iceCandidates: List<Map<String, Any>>? = null
 )
 
 data class AudioChunk(

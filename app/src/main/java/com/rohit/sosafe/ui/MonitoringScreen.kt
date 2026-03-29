@@ -31,12 +31,14 @@ import com.google.firebase.ktx.Firebase
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.data.contracts.*
 import com.rohit.sosafe.ui.theme.*
+import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.delay
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import org.webrtc.PeerConnection
 
 @Composable
 fun MonitoringScreen(
@@ -52,11 +54,36 @@ fun MonitoringScreen(
     val audioQueue = remember { mutableStateListOf<AudioChunk>() }
     val playedSequences = remember { mutableSetOf<Int>() }
 
+    // WebRTC State
+    var webrtcState by remember { mutableStateOf(PeerConnection.PeerConnectionState.NEW) }
+    val isWebRTCActive = webrtcState == PeerConnection.PeerConnectionState.CONNECTED
+
+    val webrtcManager = remember(session.sessionId) {
+        WebRTCManager(
+            context = context,
+            sessionId = session.sessionId,
+            onConnectionStateChange = { newState ->
+                webrtcState = newState
+            },
+            onAudioTrackReceived = { track ->
+                track.setEnabled(true)
+                Log.d("SOS_AUDIT", "WebRTC Audio Track Received and Enabled")
+            }
+        )
+    }
+
+    LaunchedEffect(session.sessionId) {
+        webrtcManager.startReceiver()
+    }
+
+    DisposableEffect(session.sessionId) {
+        onDispose { webrtcManager.stop() }
+    }
+
     Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
     Configuration.getInstance().userAgentValue = context.packageName
 
     // STEP 4: FLATTENED LOCATION SYSTEM (Document Listener)
-    // Also handles auto-closing when session ends
     DisposableEffect(session.sessionId) {
         val registration = db.collection(SoSafeContract.Collections.SESSIONS)
             .document(session.sessionId)
@@ -69,41 +96,33 @@ fun MonitoringScreen(
                 if (snapshot != null && snapshot.exists()) {
                     val updatedSession = snapshot.toObject(SosSession::class.java)
                     
-                    // AUTO-CLOSE Logic
                     if (updatedSession?.status == SoSafeContract.Status.ENDED) {
-                        Log.d("SOS_AUDIT", "SESSION_ENDED: Closing monitoring screen.")
                         onClose()
                         return@addSnapshotListener
                     }
 
                     if (updatedSession?.lastLocation != null) {
                         lastLocation = updatedSession.lastLocation
-                        Log.d("SOS_AUDIT", "LOCATION_WRITE (Received): ${lastLocation?.latitude},${lastLocation?.longitude}")
                     }
                 } else if (snapshot != null && !snapshot.exists()) {
-                    // Session deleted or finished
                     onClose()
                 }
             }
         onDispose { registration.remove() }
     }
 
-    // STEP 5: SEQUENCE-BASED AUDIO SYSTEM
+    // STEP 5: SEQUENCE-BASED AUDIO SYSTEM (Always buffers as backup)
     DisposableEffect(session.sessionId) {
         val registration = db.collection(SoSafeContract.getAudioChunksSubcollection(session.sessionId))
             .orderBy(SoSafeContract.Fields.SEQUENCE, Query.Direction.ASCENDING)
             .limit(20)
             .addSnapshotListener { snapshot, e ->
-                if (e != null) {
-                    Log.e("SOS_AUDIT", "LISTENER_ERROR (Audio): ${e.message}", e)
-                    return@addSnapshotListener
-                }
+                if (e != null) return@addSnapshotListener
 
                 snapshot?.documentChanges?.forEach { change ->
                     if (change.type == DocumentChange.Type.ADDED) {
                         val chunk = change.document.toObject(AudioChunk::class.java)
                         if (!playedSequences.contains(chunk.sequence)) {
-                            Log.d("SOS_AUDIT", "AUDIO_WRITE (Received): seq=${chunk.sequence}")
                             playedSequences.add(chunk.sequence)
                             audioQueue.add(chunk)
                         }
@@ -177,7 +196,7 @@ fun MonitoringScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    color = DangerRed,
+                    color = if (isWebRTCActive) SuccessGreen else DangerRed,
                     shape = RoundedCornerShape(4.dp)
                 ) {
                     Row(
@@ -186,7 +205,12 @@ fun MonitoringScreen(
                     ) {
                         Box(modifier = Modifier.size(8.dp).background(PureWhite, RoundedCornerShape(4.dp)))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("LIVE MONITORING", color = PureWhite, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (isWebRTCActive) "LIVE AUDIO (WEBRTC)" else "MONITORING (CHUNKS)", 
+                            color = PureWhite, 
+                            style = MaterialTheme.typography.labelMedium, 
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
 
@@ -212,13 +236,7 @@ fun MonitoringScreen(
                         color = PureWhite, 
                         fontWeight = FontWeight.Bold
                     )
-                    if (displayName.isNotBlank()) {
-                        Text(
-                            text = "ID: ${session.senderId}", 
-                            color = LightGrey, 
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
+                    
                     Spacer(modifier = Modifier.height(8.dp))
                     
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -233,7 +251,11 @@ fun MonitoringScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    AudioQueuePlayer(audioQueue, initialDelayMillis)
+                    AudioQueuePlayer(
+                        queue = audioQueue, 
+                        initialDelayMillis = initialDelayMillis,
+                        isWebRTCActive = isWebRTCActive
+                    )
                 }
             }
         }
@@ -241,7 +263,11 @@ fun MonitoringScreen(
 }
 
 @Composable
-fun AudioQueuePlayer(queue: MutableList<AudioChunk>, initialDelayMillis: Long = 0L) {
+fun AudioQueuePlayer(
+    queue: MutableList<AudioChunk>, 
+    initialDelayMillis: Long = 0L,
+    isWebRTCActive: Boolean = false
+) {
     val mediaPlayer = remember { MediaPlayer() }
     var isCurrentlyPlaying by remember { mutableStateOf(false) }
     var isDelayFinished by remember { mutableStateOf(initialDelayMillis == 0L) }
@@ -253,7 +279,17 @@ fun AudioQueuePlayer(queue: MutableList<AudioChunk>, initialDelayMillis: Long = 
         }
     }
 
-    LaunchedEffect(queue.size, isCurrentlyPlaying, isDelayFinished) {
+    // Fallback Logic: Only play chunks if WebRTC is NOT active
+    LaunchedEffect(queue.size, isCurrentlyPlaying, isDelayFinished, isWebRTCActive) {
+        if (isWebRTCActive) {
+            if (isCurrentlyPlaying) {
+                mediaPlayer.stop()
+                isCurrentlyPlaying = false
+            }
+            // We keep the queue buffering but don't play
+            return@LaunchedEffect
+        }
+
         if (isDelayFinished && !isCurrentlyPlaying && queue.isNotEmpty()) {
             val nextChunk = queue.removeAt(0)
             try {
@@ -266,12 +302,10 @@ fun AudioQueuePlayer(queue: MutableList<AudioChunk>, initialDelayMillis: Long = 
                     isCurrentlyPlaying = false
                 }
                 mediaPlayer.setOnErrorListener { _, what, extra ->
-                    Log.e("SOS_AUDIT", "MediaPlayer error: $what, $extra")
                     isCurrentlyPlaying = false
                     true
                 }
             } catch (e: Exception) {
-                Log.e("SOS_AUDIT", "Audio play failed", e)
                 isCurrentlyPlaying = false
             }
         }
@@ -292,15 +326,18 @@ fun AudioQueuePlayer(queue: MutableList<AudioChunk>, initialDelayMillis: Long = 
         Icon(
             imageVector = Icons.Default.Mic, 
             contentDescription = null, 
-            tint = if (isCurrentlyPlaying) DangerRed else if (!isDelayFinished) LightGrey else SuccessGreen
+            tint = if (isWebRTCActive) SuccessGreen else if (isCurrentlyPlaying) DangerRed else LightGrey
         )
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = if (!isDelayFinished) "INITIALIZING SECURE FEED..."
-                   else if (isCurrentlyPlaying) "PLAYING LIVE AUDIO FEED..." 
-                   else if (queue.isNotEmpty()) "BUFFERING (${queue.size} CHUNKS)..."
-                   else "AWAITING AUDIO FEED",
-            color = if (isCurrentlyPlaying) DangerRed else if (!isDelayFinished) LightGrey else SuccessGreen,
+            text = when {
+                isWebRTCActive -> "LIVE AUDIO FEED (WEBRTC ACTIVE)"
+                !isDelayFinished -> "INITIALIZING SECURE FEED..."
+                isCurrentlyPlaying -> "PLAYING BACKUP AUDIO FEED..."
+                queue.isNotEmpty() -> "BUFFERING BACKUP (${queue.size} CHUNKS)..."
+                else -> "AWAITING AUDIO FEED"
+            },
+            color = if (isWebRTCActive || isCurrentlyPlaying) SuccessGreen else LightGrey,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold
         )

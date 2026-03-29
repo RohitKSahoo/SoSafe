@@ -66,6 +66,9 @@ dependencies {
     // Map - osmdroid
     implementation("org.osmdroid:osmdroid-android:6.1.20")
 
+    // WebRTC (Using io.github.webrtc-sdk as com.google.webrtc is often unavailable)
+    implementation("io.github.webrtc-sdk:android:125.6422.06")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
