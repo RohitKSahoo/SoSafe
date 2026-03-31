@@ -31,8 +31,10 @@ import com.google.firebase.ktx.Firebase
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.data.contracts.*
 import com.rohit.sosafe.ui.theme.*
+import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -49,8 +51,10 @@ fun MonitoringScreen(
 ) {
     val context = LocalContext.current
     val db = Firebase.firestore
-    var lastLocation by remember { mutableStateOf(session.lastLocation) }
+    val scope = rememberCoroutineScope()
+    val recordingManager = remember { RecordingManager(context) }
     
+    var lastLocation by remember { mutableStateOf(session.lastLocation) }
     val audioQueue = remember { mutableStateListOf<AudioChunk>() }
     val playedSequences = remember { mutableSetOf<Int>() }
 
@@ -77,7 +81,12 @@ fun MonitoringScreen(
     }
 
     DisposableEffect(session.sessionId) {
-        onDispose { webrtcManager.stop() }
+        onDispose { 
+            webrtcManager.stop()
+            // GUARDIAN MERGE FIX: Removed finalizeRecording from here.
+            // It is now handled by SOSForegroundService to ensure it completes
+            // even if the user closes this screen or the app.
+        }
     }
 
     Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
@@ -97,6 +106,7 @@ fun MonitoringScreen(
                     val updatedSession = snapshot.toObject(SosSession::class.java)
                     
                     if (updatedSession?.status == SoSafeContract.Status.ENDED) {
+                        Log.d("SOS_AUDIT", "MONITORING_SCREEN: Session marked ENDED remotely.")
                         onClose()
                         return@addSnapshotListener
                     }
@@ -125,6 +135,16 @@ fun MonitoringScreen(
                         if (!playedSequences.contains(chunk.sequence)) {
                             playedSequences.add(chunk.sequence)
                             audioQueue.add(chunk)
+                            
+                            // PERSISTENCE: Download and save chunk for Guardian
+                            scope.launch {
+                                recordingManager.downloadAndSaveChunk(
+                                    session.senderId, 
+                                    session.sessionId, 
+                                    chunk.sequence, 
+                                    chunk.fileUrl
+                                )
+                            }
                         }
                     }
                 }

@@ -33,6 +33,7 @@ import com.rohit.sosafe.data.*
 import com.rohit.sosafe.data.contracts.*
 import com.rohit.sosafe.ui.SOSIncomingActivity
 import com.rohit.sosafe.utils.CloudinaryUploader
+import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.SOSTriggerManager
 import com.rohit.sosafe.utils.ServiceState
 import com.rohit.sosafe.utils.WebRTCManager
@@ -45,6 +46,7 @@ class SOSForegroundService : Service() {
     private val CHANNEL_ID = "SOS_SERVICE_CHANNEL"
     private val GUARDIAN_CHANNEL_ID = "SOS_GUARDIAN_CHANNEL"
     private val NOTIFICATION_ID = 1
+    private val AUDIT_TAG = "SOS_AUDIT"
     private var sosTriggerManager: SOSTriggerManager? = null
     private var isEmergencyActive = false
     private var sessionId: String = ""
@@ -69,6 +71,7 @@ class SOSForegroundService : Service() {
     
     private var webrtcManager: WebRTCManager? = null
     private lateinit var streamingModeManager: StreamingModeManager
+    private lateinit var recordingManager: RecordingManager
     
     // TRACKING: Prevent duplicate alerts for the same session
     private val notifiedSessions = mutableSetOf<String>()
@@ -84,6 +87,7 @@ class SOSForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(AUDIT_TAG, "SERVICE_CREATED")
         
         val appModeManager = AppModeManager(applicationContext)
         val mode = appModeManager.getAppMode()
@@ -93,6 +97,7 @@ class SOSForegroundService : Service() {
         
         userManager = UserManager(applicationContext)
         streamingModeManager = StreamingModeManager(applicationContext)
+        recordingManager = RecordingManager(applicationContext)
         val myId = userManager.getUserCodeSync()
         if (myId != null) {
             RoleManager.myUserId = myId
@@ -151,6 +156,7 @@ class SOSForegroundService : Service() {
         manager.notify(alertNotificationId, notification)
         
         ServiceState.setGuardianActive(true)
+        Log.d(AUDIT_TAG, "ALERT_TRIGGERED: Session $sessionId from $senderId")
     }
 
     private fun acquireWakeLock() {
@@ -182,7 +188,7 @@ class SOSForegroundService : Service() {
             .document(myCode)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) {
-                    Log.e("SOS_AUDIT", "SERVICE_USER_LISTENER_ERROR: ${e.message}")
+                    Log.e(AUDIT_TAG, "SERVICE_USER_LISTENER_ERROR: ${e.message}")
                     return@addSnapshotListener
                 }
 
@@ -200,17 +206,17 @@ class SOSForegroundService : Service() {
     private fun updateSosAlertListener(contacts: List<String>) {
         sessionListenerRegistration?.remove()
         if (contacts.isEmpty()) {
-            Log.d("SOS_AUDIT", "No contacts to monitor in service.")
+            Log.d(AUDIT_TAG, "No contacts to monitor in service.")
             return
         }
 
-        Log.d("SOS_AUDIT", "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
+        Log.d(AUDIT_TAG, "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
         sessionListenerRegistration = db.collection(SoSafeContract.Collections.SESSIONS)
             .whereIn(SoSafeContract.Fields.SENDER_ID, contacts)
             .whereEqualTo(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ACTIVE)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) {
-                    Log.e("SOS_AUDIT", "SERVICE_SESSION_LISTENER_ERROR: ${e.message}")
+                    Log.e(AUDIT_TAG, "SERVICE_SESSION_LISTENER_ERROR: ${e.message}")
                     return@addSnapshotListener
                 }
 
@@ -225,11 +231,22 @@ class SOSForegroundService : Service() {
                             )
                         }
                         DocumentChange.Type.REMOVED -> {
-                            val sessionId = change.document.id
+                            val session = change.document.toObject(SosSession::class.java)
+                            val sId = session.sessionId.ifEmpty { change.document.id }
+                            val senderId = session.senderId
+                            
                             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                            notificationManager.cancel(sessionId.hashCode())
-                            notifiedSessions.remove(sessionId)
-                            Log.d("SOS_AUDIT", "CANCELLED_NOTIFICATION: Session $sessionId ended.")
+                            notificationManager.cancel(sId.hashCode())
+                            notifiedSessions.remove(sId)
+                            Log.d(AUDIT_TAG, "SESSION_REMOVED_LISTENER: $sId ended.")
+                            
+                            // Guardian side: Finalize recording in background service context
+                            if (senderId.isNotEmpty()) {
+                                serviceScope.launch {
+                                    Log.d(AUDIT_TAG, "GUARDIAN_AUTO_FINALIZE_START: Session $sId")
+                                    recordingManager.finalizeRecording(senderId, sId)
+                                }
+                            }
                         }
                         else -> {}
                     }
@@ -297,7 +314,7 @@ class SOSForegroundService : Service() {
                 db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
                     .set(sessionData).await()
                 
-                Log.d("SOS_AUDIT", "SESSION_CREATED: $sessionId | MODE: $mode")
+                Log.d(AUDIT_TAG, "SESSION_CREATED: $sessionId | MODE: $mode")
                 notifyGuardiansOfSOS(sessionId, myId)
 
                 withContext(Dispatchers.Main) {
@@ -312,7 +329,7 @@ class SOSForegroundService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e("SOS_AUDIT", "SESSION_CREATE_FAILED: ${e.message}")
+                Log.e(AUDIT_TAG, "SESSION_CREATE_FAILED: ${e.message}")
             }
         }
     }
@@ -322,7 +339,7 @@ class SOSForegroundService : Service() {
             context = this,
             sessionId = sessionId,
             onConnectionStateChange = { state ->
-                Log.d("SOS_AUDIT", "WebRTC State: $state")
+                Log.d(AUDIT_TAG, "WebRTC State: $state")
             }
         )
         webrtcManager?.startSender()
@@ -341,10 +358,10 @@ class SOSForegroundService : Service() {
 
                 val tokens = guardianDocs.documents.mapNotNull { it.getString(SoSafeContract.Fields.FCM_TOKEN) }
                 if (tokens.isNotEmpty()) {
-                    Log.d("SOS_AUDIT", "NOTIFYING_GUARDIANS: Found ${tokens.size} tokens")
+                    Log.d(AUDIT_TAG, "NOTIFYING_GUARDIANS: Found ${tokens.size} tokens")
                 }
             } catch (e: Exception) {
-                Log.e("SOS_AUDIT", "Error notifying guardians: ${e.message}")
+                Log.e(AUDIT_TAG, "Error notifying guardians: ${e.message}")
             }
         }
     }
@@ -353,8 +370,11 @@ class SOSForegroundService : Service() {
         if (!isEmergencyActive) return
         
         val sessionToClose = sessionId
+        val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
         isEmergencyActive = false
         ServiceState.setEmergencyActive(false)
+        
+        Log.d(AUDIT_TAG, "STOP_EMERGENCY_INITIATED: $sessionToClose")
         
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
         audioHandler.removeCallbacksAndMessages(null)
@@ -369,11 +389,17 @@ class SOSForegroundService : Service() {
         
         serviceScope.launch {
             try {
-                db.collection(SoSafeContract.Collections.SESSIONS).document(sessionToClose)
-                    .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED).await()
-                Log.d("SOS_AUDIT", "SESSION_ENDED_BY_USER: $sessionToClose")
+                withContext(NonCancellable) {
+                    db.collection(SoSafeContract.Collections.SESSIONS).document(sessionToClose)
+                        .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED).await()
+                    Log.d(AUDIT_TAG, "SESSION_STATUS_UPDATED: ENDED ($sessionToClose)")
+                    
+                    // Finalize local recording on Sender side
+                    recordingManager.finalizeRecording(myId, sessionToClose)
+                    Log.d(AUDIT_TAG, "SENDER_LOCAL_FINALIZE_DONE: $sessionToClose")
+                }
             } catch (e: Exception) {
-                Log.e("SOS_AUDIT", "SESSION_END_FAILED: ${e.message}")
+                Log.e(AUDIT_TAG, "SESSION_END_PROCESSING_FAILED: ${e.message}")
             }
         }
         
@@ -420,7 +446,7 @@ class SOSForegroundService : Service() {
             }
             audioHandler.postDelayed({ stopAndUploadChunk() }, CHUNK_DURATION_MS)
         } catch (e: Exception) {
-            Log.e("SOS_AUDIT", "AUDIO_RECORD_FAILED: ${e.message}")
+            Log.e(AUDIT_TAG, "AUDIO_RECORD_FAILED: ${e.message}")
         }
     }
 
@@ -430,10 +456,17 @@ class SOSForegroundService : Service() {
         try {
             mediaRecorder?.apply { stop(); release() }
             mediaRecorder = null
-            fileToUpload?.let { uploadAudioToCloudinary(it, sequence) }
+            
+            val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
+            if (fileToUpload != null && fileToUpload.exists()) {
+                // PERSISTENCE: Save chunk locally before uploading/deleting
+                recordingManager.saveChunk(myId, sessionId, sequence, fileToUpload)
+                uploadAudioToCloudinary(fileToUpload, sequence)
+            }
+            
             if (isEmergencyActive) recordNextChunk()
         } catch (e: Exception) {
-            Log.e("SOS_AUDIT", "AUDIO_STOP_FAILED: ${e.message}")
+            Log.e(AUDIT_TAG, "AUDIO_STOP_FAILED: ${e.message}")
             if (isEmergencyActive) recordNextChunk()
         }
     }
@@ -444,7 +477,7 @@ class SOSForegroundService : Service() {
                 saveAudioUrlToFirestore(url, sequence)
                 file.delete()
             },
-            onFailure = { Log.e("SOS_AUDIT", "CLOUDINARY_UPLOAD_FAILED") }
+            onFailure = { Log.e(AUDIT_TAG, "CLOUDINARY_UPLOAD_FAILED") }
         )
     }
 
@@ -459,10 +492,13 @@ class SOSForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        Log.d(AUDIT_TAG, "SERVICE_DESTROYED")
         val finalSessionId = sessionId
         val wasEmergencyActive = isEmergencyActive
+        val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
         
         if (wasEmergencyActive && finalSessionId.isNotEmpty()) {
+            Log.w(AUDIT_TAG, "EMERGENCY_ACTIVE_ON_DESTROY: Cleaning up session $finalSessionId")
             @OptIn(DelicateCoroutinesApi::class)
             GlobalScope.launch(Dispatchers.IO) {
                 try {
@@ -470,7 +506,12 @@ class SOSForegroundService : Service() {
                         .document(finalSessionId)
                         .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED)
                         .await()
-                } catch (e: Exception) {}
+                    
+                    // Abrupt stop: Attempt to finalize what we have
+                    RecordingManager(applicationContext).finalizeRecording(myId, finalSessionId)
+                } catch (e: Exception) {
+                    Log.e(AUDIT_TAG, "ABRUPT_CLEANUP_FAILED: ${e.message}")
+                }
             }
         }
         

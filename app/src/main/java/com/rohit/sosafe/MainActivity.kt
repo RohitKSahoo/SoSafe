@@ -29,6 +29,7 @@ import com.rohit.sosafe.data.StreamingModeManager
 import com.rohit.sosafe.ui.ModeSelectionScreen
 import com.rohit.sosafe.ui.AddContactDialog
 import com.rohit.sosafe.data.RoleManager
+import com.rohit.sosafe.utils.RecordingManager
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -37,6 +38,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var sosTriggerManager: SOSTriggerManager
     private lateinit var appModeManager: AppModeManager
     private lateinit var streamingModeManager: StreamingModeManager
+    private lateinit var recordingManager: RecordingManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +47,7 @@ class MainActivity : ComponentActivity() {
         userManager = UserManager(applicationContext)
         appModeManager = AppModeManager(applicationContext)
         streamingModeManager = StreamingModeManager(applicationContext)
+        recordingManager = RecordingManager(applicationContext)
         sosTriggerManager = SOSTriggerManager(this)
         
         // Initialize RoleManager
@@ -74,7 +77,7 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     val viewModel: DashboardViewModel = viewModel(
-                        factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager)
+                        factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager, recordingManager)
                     )
                     
                     MainScreen(

@@ -1,5 +1,7 @@
 package com.rohit.sosafe.ui
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -30,11 +32,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.FileProvider
 import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.data.StreamingMode
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.*
+import com.rohit.sosafe.utils.RecordingInfo
 import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun GridBackground(modifier: Modifier = Modifier) {
@@ -72,6 +77,7 @@ fun DashboardScreen(
     var showMonitoringScreen by remember { mutableStateOf(false) }
     var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
     var contactToRename by remember { mutableStateOf<Contact?>(null) }
+    var contactForHistory by remember { mutableStateOf<Contact?>(null) }
 
     // Alert Popup Handling
     if (appMode == AppMode.GUARDIAN && state.activeEmergencySession != null) {
@@ -108,6 +114,7 @@ fun DashboardScreen(
     if (showMonitoringScreen && selectedMonitoringSession != null) {
         MonitoringScreen(
             session = selectedMonitoringSession!!,
+            displayName = state.contacts.find { it.id == selectedMonitoringSession!!.senderId }?.name ?: "",
             onClose = { 
                 showMonitoringScreen = false
                 selectedMonitoringSession = null
@@ -149,7 +156,11 @@ fun DashboardScreen(
                                 if (appMode == AppMode.SENDER) {
                                     SenderDashboard(
                                         state = state,
-                                        onContactClick = { contactToRename = it }
+                                        onContactClick = { contact ->
+                                            viewModel.loadRecordingsForUser(contact.id)
+                                            contactForHistory = contact
+                                        },
+                                        onRenameClick = { contactToRename = it }
                                     )
                                 } else {
                                     GuardianDashboard(
@@ -160,9 +171,11 @@ fun DashboardScreen(
                                                 selectedMonitoringSession = contact.activeSession
                                                 showMonitoringScreen = true
                                             } else {
-                                                contactToRename = contact
+                                                viewModel.loadRecordingsForUser(contact.id)
+                                                contactForHistory = contact
                                             }
-                                        }
+                                        },
+                                        onRenameClick = { contactToRename = it }
                                     )
                                 }
                             }
@@ -192,6 +205,94 @@ fun DashboardScreen(
                 contactToRename = null
             }
         )
+    }
+
+    if (contactForHistory != null) {
+        SessionHistoryDialog(
+            contactName = contactForHistory!!.name,
+            recordings = state.selectedUserRecordings,
+            onDismiss = { contactForHistory = null }
+        )
+    }
+}
+
+@Composable
+fun SessionHistoryDialog(
+    contactName: String,
+    recordings: List<RecordingInfo>,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 500.dp).padding(16.dp),
+            shape = RoundedCornerShape(4.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkGrey),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey)
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Text(
+                    text = "RECORDINGS: $contactName", 
+                    style = MaterialTheme.typography.titleMedium, 
+                    color = PureWhite, 
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (recordings.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
+                        Text("No recordings found", color = LightGrey, style = MaterialTheme.typography.bodySmall)
+                    }
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(recordings) { recording ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(Black)
+                                    .clickable {
+                                        playRecording(recording.file, context)
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = SuccessGreen)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(recording.durationText, color = PureWhite, style = MaterialTheme.typography.bodyMedium)
+                                    Text("ID: ${recording.sessionId.takeLast(6)}", color = LightGrey, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MediumGrey)
+                ) {
+                    Text("CLOSE")
+                }
+            }
+        }
+    }
+}
+
+private fun playRecording(file: File, context: android.content.Context) {
+    try {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "audio/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(context, "No app to play audio found", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -250,7 +351,7 @@ fun RenameDialog(
 }
 
 @Composable
-fun SenderDashboard(state: DashboardState, onContactClick: (Contact) -> Unit) {
+fun SenderDashboard(state: DashboardState, onContactClick: (Contact) -> Unit, onRenameClick: (Contact) -> Unit) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         UserCodeCard(state.userCode)
         Spacer(modifier = Modifier.height(24.dp))
@@ -274,10 +375,11 @@ fun SenderDashboard(state: DashboardState, onContactClick: (Contact) -> Unit) {
         }
         Spacer(modifier = Modifier.height(32.dp))
         ContactsSection(
-            title = "LINKED GUARDIANS (Tap to rename)", 
+            title = "LINKED GUARDIANS (Tap name for history)", 
             contacts = state.contacts, 
             showAddButton = false,
-            onContactClick = onContactClick
+            onContactClick = onContactClick,
+            onRenameClick = onRenameClick
         )
     }
 }
@@ -286,15 +388,17 @@ fun SenderDashboard(state: DashboardState, onContactClick: (Contact) -> Unit) {
 fun GuardianDashboard(
     state: DashboardState, 
     onAddContactClick: () -> Unit,
-    onContactClick: (Contact) -> Unit
+    onContactClick: (Contact) -> Unit,
+    onRenameClick: (Contact) -> Unit
 ) {
     Column {
         ContactsSection(
-            title = "PROTECTED USERS", 
+            title = "PROTECTED USERS (Tap name for history)", 
             contacts = state.contacts, 
             showAddButton = true,
             onAddContactClick = onAddContactClick,
-            onContactClick = onContactClick
+            onContactClick = onContactClick,
+            onRenameClick = onRenameClick
         )
     }
 }
@@ -406,7 +510,8 @@ fun ContactsSection(
     contacts: List<Contact>, 
     showAddButton: Boolean,
     onAddContactClick: () -> Unit = {},
-    onContactClick: (Contact) -> Unit = {}
+    onContactClick: (Contact) -> Unit = {},
+    onRenameClick: (Contact) -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(text = title, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
@@ -427,7 +532,8 @@ fun ContactsSection(
                 items(contacts) { contact -> 
                     ContactItem(
                         contact = contact, 
-                        onClick = { onContactClick(contact) }
+                        onClick = { onContactClick(contact) },
+                        onRenameClick = { onRenameClick(contact) }
                     ) 
                 }
             }
@@ -451,7 +557,7 @@ fun ContactsSection(
 }
 
 @Composable
-fun ContactItem(contact: Contact, onClick: () -> Unit) {
+fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit) {
     val isEmergency = contact.status == ContactStatus.EMERGENCY
     
     Row(
@@ -511,6 +617,10 @@ fun ContactItem(contact: Contact, onClick: () -> Unit) {
                 shape = RoundedCornerShape(2.dp)
             ) {
                 Text("VIEW", color = PureWhite, style = MaterialTheme.typography.labelSmall)
+            }
+        } else {
+            IconButton(onClick = onRenameClick) {
+                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = LightGrey, modifier = Modifier.size(18.dp))
             }
         }
     }

@@ -9,6 +9,8 @@ import com.google.firebase.ktx.Firebase
 import com.rohit.sosafe.data.*
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.data.contracts.SoSafeContract
+import com.rohit.sosafe.utils.RecordingInfo
+import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.ServiceState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,13 +39,15 @@ data class DashboardState(
     val isEmergency: Boolean = false,
     val activeEmergencySession: SosSession? = null,
     val dismissedSessions: Set<String> = emptySet(),
-    val streamingMode: StreamingMode = StreamingMode.HYBRID
+    val streamingMode: StreamingMode = StreamingMode.HYBRID,
+    val selectedUserRecordings: List<RecordingInfo> = emptyList()
 )
 
 class DashboardViewModel(
     private val userManager: UserManager,
     private val appModeManager: AppModeManager,
-    private val streamingModeManager: StreamingModeManager
+    private val streamingModeManager: StreamingModeManager,
+    private val recordingManager: RecordingManager
 ) : ViewModel() {
 
     private val _dashboardState = MutableStateFlow(DashboardState())
@@ -209,6 +213,11 @@ class DashboardViewModel(
             dismissedSessions = dismissed,
             activeEmergencySession = null
         )
+    }
+
+    fun loadRecordingsForUser(userId: String) {
+        val recordings = recordingManager.getRecordingsForUser(userId)
+        _dashboardState.value = _dashboardState.value.copy(selectedUserRecordings = recordings)
     }
 
     override fun onCleared() {
