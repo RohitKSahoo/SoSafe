@@ -3,6 +3,7 @@ package com.rohit.sosafe.utils
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.MediaRecorder
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.google.firebase.firestore.FieldValue
@@ -40,7 +41,11 @@ class WebRTCManager(
 
         val options = PeerConnectionFactory.Options()
         
+        // IMPROVED: Use VOICE_COMMUNICATION for better mic sensitivity and hardware processing
         val audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
+            .setUseHardwareAcousticEchoCanceler(true)
+            .setUseHardwareNoiseSuppressor(true)
+            .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
                 override fun onWebRtcAudioRecordInitError(p0: String?) { Log.e(TAG, "AudioRecord Init Error: $p0") }
                 override fun onWebRtcAudioRecordStartError(p0: JavaAudioDeviceModule.AudioRecordStartErrorCode?, p1: String?) { Log.e(TAG, "AudioRecord Start Error: $p1") }

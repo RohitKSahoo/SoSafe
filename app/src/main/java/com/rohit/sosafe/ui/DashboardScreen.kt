@@ -66,6 +66,7 @@ fun DashboardScreen(
     appMode: AppMode,
     onAddContactClick: () -> Unit,
     onTriggerSOS: () -> Unit,
+    onStopSOS: () -> Unit = {},
     onStopService: () -> Unit,
     onSwitchMode: () -> Unit,
     modifier: Modifier = Modifier
@@ -111,13 +112,19 @@ fun DashboardScreen(
         )
     }
 
-    if (showMonitoringScreen && selectedMonitoringSession != null) {
+    if (showMonitoringScreen && (selectedMonitoringSession != null || state.selectedPlaybackRecording != null)) {
         MonitoringScreen(
-            session = selectedMonitoringSession!!,
-            displayName = state.contacts.find { it.id == selectedMonitoringSession!!.senderId }?.name ?: "",
+            session = selectedMonitoringSession,
+            playbackInfo = state.selectedPlaybackRecording,
+            displayName = if (state.selectedPlaybackRecording != null) {
+                contactForHistory?.name ?: ""
+            } else {
+                state.contacts.find { it.id == selectedMonitoringSession!!.senderId }?.name ?: ""
+            },
             onClose = { 
                 showMonitoringScreen = false
                 selectedMonitoringSession = null
+                viewModel.selectPlaybackRecording(null)
             }
         )
     } else {
@@ -160,7 +167,8 @@ fun DashboardScreen(
                                             viewModel.loadRecordingsForUser(contact.id)
                                             contactForHistory = contact
                                         },
-                                        onRenameClick = { contactToRename = it }
+                                        onRenameClick = { contactToRename = it },
+                                        onStopSOS = onStopSOS
                                     )
                                 } else {
                                     GuardianDashboard(
@@ -211,7 +219,11 @@ fun DashboardScreen(
         SessionHistoryDialog(
             contactName = contactForHistory!!.name,
             recordings = state.selectedUserRecordings,
-            onDismiss = { contactForHistory = null }
+            onDismiss = { contactForHistory = null },
+            onPlayRecording = { recording ->
+                viewModel.selectPlaybackRecording(recording)
+                showMonitoringScreen = true
+            }
         )
     }
 }
@@ -220,10 +232,9 @@ fun DashboardScreen(
 fun SessionHistoryDialog(
     contactName: String,
     recordings: List<RecordingInfo>,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onPlayRecording: (RecordingInfo) -> Unit
 ) {
-    val context = LocalContext.current
-
     Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier.fillMaxWidth().heightIn(max = 500.dp).padding(16.dp),
@@ -253,7 +264,7 @@ fun SessionHistoryDialog(
                                     .clip(RoundedCornerShape(2.dp))
                                     .background(Black)
                                     .clickable {
-                                        playRecording(recording.file, context)
+                                        onPlayRecording(recording)
                                     }
                                     .padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -280,19 +291,6 @@ fun SessionHistoryDialog(
                 }
             }
         }
-    }
-}
-
-private fun playRecording(file: File, context: android.content.Context) {
-    try {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "audio/*")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(intent)
-    } catch (e: Exception) {
-        Toast.makeText(context, "No app to play audio found", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -351,10 +349,37 @@ fun RenameDialog(
 }
 
 @Composable
-fun SenderDashboard(state: DashboardState, onContactClick: (Contact) -> Unit, onRenameClick: (Contact) -> Unit) {
+fun SenderDashboard(
+    state: DashboardState, 
+    onContactClick: (Contact) -> Unit, 
+    onRenameClick: (Contact) -> Unit,
+    onStopSOS: () -> Unit
+) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         UserCodeCard(state.userCode)
         Spacer(modifier = Modifier.height(24.dp))
+        
+        if (state.isEmergency) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onStopSOS() },
+                colors = CardDefaults.cardColors(containerColor = DangerRed),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = null, tint = PureWhite, modifier = Modifier.size(32.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("STOP EMERGENCY SOS", color = PureWhite, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                }
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+
         Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(modifier = Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth()) {

@@ -6,10 +6,12 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.util.Log
+import com.google.firebase.firestore.GeoPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -20,7 +22,8 @@ data class RecordingInfo(
     val sessionId: String,
     val file: File,
     val timestamp: Long,
-    val durationText: String
+    val durationText: String,
+    val lastLocation: GeoPoint? = null
 )
 
 class RecordingManager(private val context: Context) {
@@ -35,6 +38,50 @@ class RecordingManager(private val context: Context) {
             Log.d(AUDIT_TAG, "FOLDER_CREATED: ${folder.absolutePath}")
         }
         return folder
+    }
+
+    fun saveMetadata(userId: String, sessionId: String, lat: Double, lng: Double, senderName: String = "") {
+        try {
+            val folder = getSessionFolder(userId, sessionId)
+            val metadataFile = File(folder, "metadata.json")
+            val json = JSONObject().apply {
+                put("lat", lat)
+                put("lng", lng)
+                put("senderName", senderName)
+                put("timestamp", System.currentTimeMillis())
+            }
+            metadataFile.writeText(json.toString())
+            Log.d(AUDIT_TAG, "METADATA_SAVED: $sessionId at ($lat, $lng)")
+        } catch (e: Exception) {
+            Log.e(AUDIT_TAG, "METADATA_SAVE_ERROR: ${e.message}")
+        }
+    }
+
+    fun getMetadata(userId: String, sessionId: String): RecordingInfo? {
+        try {
+            val folder = getSessionFolder(userId, sessionId)
+            val metadataFile = File(folder, "metadata.json")
+            val recordingFile = File(folder, "SOS_Recording.m4a")
+            
+            if (!metadataFile.exists() || !recordingFile.exists()) return null
+            
+            val json = JSONObject(metadataFile.readText())
+            val lat = json.getDouble("lat")
+            val lng = json.getDouble("lng")
+            val timestamp = json.optLong("timestamp", recordingFile.lastModified())
+            
+            val sdf = SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault())
+            
+            return RecordingInfo(
+                sessionId = sessionId,
+                file = recordingFile,
+                timestamp = timestamp,
+                durationText = sdf.format(Date(timestamp)),
+                lastLocation = GeoPoint(lat, lng)
+            )
+        } catch (e: Exception) {
+            return null
+        }
     }
 
     fun saveChunk(userId: String, sessionId: String, sequence: Int, sourceFile: File) {
@@ -94,7 +141,6 @@ class RecordingManager(private val context: Context) {
         }
 
         val outputFile = File(folder, "SOS_Recording.m4a")
-        // If file exists and is not empty, don't re-mux (unless we want to overwrite)
         if (outputFile.exists() && outputFile.length() > 0) {
             Log.d(AUDIT_TAG, "FINALIZE_SKIPPED: Final recording already exists.")
             return outputFile
@@ -186,18 +232,22 @@ class RecordingManager(private val context: Context) {
 
         return userFolder.listFiles { file -> file.isDirectory }
             ?.mapNotNull { sessionDir ->
-                val recordingFile = File(sessionDir, "SOS_Recording.m4a")
-                if (recordingFile.exists() && recordingFile.length() > 0) {
-                    val sessionId = sessionDir.name
-                    val timestamp = sessionId.substringAfter("session_").toLongOrNull() ?: sessionDir.lastModified()
-                    
-                    RecordingInfo(
-                        sessionId = sessionId,
-                        file = recordingFile,
-                        timestamp = timestamp,
-                        durationText = sdf.format(Date(timestamp))
-                    )
-                } else null
+                val sessionId = sessionDir.name
+                val metadata = getMetadata(userId, sessionId)
+                if (metadata != null) {
+                    metadata
+                } else {
+                    val recordingFile = File(sessionDir, "SOS_Recording.m4a")
+                    if (recordingFile.exists() && recordingFile.length() > 0) {
+                        val timestamp = sessionId.substringAfter("session_").toLongOrNull() ?: sessionDir.lastModified()
+                        RecordingInfo(
+                            sessionId = sessionId,
+                            file = recordingFile,
+                            timestamp = timestamp,
+                            durationText = sdf.format(Date(timestamp))
+                        )
+                    } else null
+                }
             }?.sortedByDescending { it.timestamp }
             ?: emptyList()
     }

@@ -89,6 +89,12 @@ class MainActivity : ComponentActivity() {
                             startGuardianService() 
                         },
                         onTriggerSOS = { sosTriggerManager.manualTrigger() },
+                        onStopSOS = { 
+                            val serviceIntent = Intent(this@MainActivity, SOSForegroundService::class.java).apply {
+                                action = SOSForegroundService.ACTION_STOP_EMERGENCY
+                            }
+                            startService(serviceIntent)
+                        },
                         onStopService = { stopGuardianService() },
                         onSwitchMode = {
                             val nextMode = if (currentAppMode == AppMode.SENDER) AppMode.GUARDIAN else AppMode.SENDER
@@ -128,6 +134,7 @@ fun MainScreen(
     appMode: AppMode,
     onPermissionsGranted: () -> Unit,
     onTriggerSOS: () -> Unit,
+    onStopSOS: () -> Unit,
     onStopService: () -> Unit,
     onSwitchMode: () -> Unit,
     modifier: Modifier = Modifier
@@ -165,6 +172,7 @@ fun MainScreen(
         appMode = appMode,
         onAddContactClick = { showAddContactDialog = true },
         onTriggerSOS = onTriggerSOS,
+        onStopSOS = onStopSOS,
         onStopService = onStopService,
         onSwitchMode = onSwitchMode,
         modifier = modifier

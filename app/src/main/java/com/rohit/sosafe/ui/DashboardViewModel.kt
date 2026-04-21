@@ -12,10 +12,7 @@ import com.rohit.sosafe.data.contracts.SoSafeContract
 import com.rohit.sosafe.utils.RecordingInfo
 import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.ServiceState
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 data class Contact(
@@ -40,7 +37,8 @@ data class DashboardState(
     val activeEmergencySession: SosSession? = null,
     val dismissedSessions: Set<String> = emptySet(),
     val streamingMode: StreamingMode = StreamingMode.HYBRID,
-    val selectedUserRecordings: List<RecordingInfo> = emptyList()
+    val selectedUserRecordings: List<RecordingInfo> = emptyList(),
+    val selectedPlaybackRecording: RecordingInfo? = null
 )
 
 class DashboardViewModel(
@@ -53,13 +51,47 @@ class DashboardViewModel(
     private val _dashboardState = MutableStateFlow(DashboardState())
     val state: StateFlow<DashboardState> = _dashboardState.asStateFlow()
     
+    // Internal state flows to avoid race conditions
+    private val _rawContacts = MutableStateFlow<List<Contact>>(emptyList())
+    private val _activeSessions = MutableStateFlow<List<SosSession>>(emptyList())
+    
     private val db = Firebase.firestore
     private var sessionListenerJob: ListenerRegistration? = null
     private var userListenerJob: ListenerRegistration? = null
 
     init {
+        setupStateSync()
         loadInitialData()
         observeServiceState()
+    }
+
+    /**
+     * REACTIVE SYNC: Combines raw contacts and active sessions into the final UI state.
+     * This prevents the "status stayed like that" bug by ensuring updates are atomic.
+     */
+    private fun setupStateSync() {
+        viewModelScope.launch {
+            combine(_rawContacts, _activeSessions, _dashboardState.map { it.dismissedSessions }.distinctUntilChanged()) { contacts, sessions, dismissed ->
+                val updatedContacts = contacts.map { contact ->
+                    val session = sessions.find { it.senderId == contact.id }
+                    if (session != null) {
+                        contact.copy(status = ContactStatus.EMERGENCY, activeSession = session)
+                    } else {
+                        contact.copy(status = ContactStatus.ONLINE, activeSession = null)
+                    }
+                }
+                
+                val activeSession = sessions.firstOrNull { it.sessionId !in dismissed }
+                
+                Triple(updatedContacts, activeSession, sessions)
+            }.collect { (contacts, activeSession, allSessions) ->
+                _dashboardState.update { it.copy(
+                    contacts = contacts,
+                    activeEmergencySession = activeSession
+                ) }
+                Log.d("SOS_AUDIT", "STATE_SYNC: Updated ${contacts.size} contacts, Active Session: ${activeSession?.sessionId}")
+            }
+        }
     }
 
     private fun loadInitialData() {
@@ -69,19 +101,18 @@ class DashboardViewModel(
                 "${code.substring(0, 3)}-${code.substring(3)}"
             } else code
 
-            _dashboardState.value = _dashboardState.value.copy(
+            _dashboardState.update { it.copy(
                 userCode = formattedCode,
                 streamingMode = streamingModeManager.getStreamingMode()
-            )
+            ) }
             
-            // Start real-time observation of user document for contact changes
             observeUserContacts(code)
         }
     }
 
     fun setStreamingMode(mode: StreamingMode) {
         streamingModeManager.setStreamingMode(mode)
-        _dashboardState.value = _dashboardState.value.copy(streamingMode = mode)
+        _dashboardState.update { it.copy(streamingMode = mode) }
     }
 
     private fun observeUserContacts(userCode: String) {
@@ -109,11 +140,10 @@ class DashboardViewModel(
                         )
                     }
                     
-                    _dashboardState.value = _dashboardState.value.copy(contacts = contacts)
+                    _rawContacts.value = contacts
                     
-                    // Re-evaluate session discovery if contacts changed
                     if (RoleManager.isGuardian()) {
-                        startSessionDiscovery()
+                        startSessionDiscovery(contactCodes)
                     }
                 }
             }
@@ -127,24 +157,19 @@ class DashboardViewModel(
             ) { isGuardian, isEmergency ->
                 Pair(isGuardian, isEmergency)
             }.collect { (isGuardian, isEmergency) ->
-                _dashboardState.value = _dashboardState.value.copy(
+                _dashboardState.update { it.copy(
                     isProtectionActive = isGuardian,
                     isEmergency = isEmergency,
                     broadcastStatus = if (isEmergency) "LIVE_FEED" else "IDLE"
-                )
+                ) }
             }
         }
     }
 
-    /**
-     * ROBUST DISCOVERY: Listens for sessions from ANY contact in the contact list.
-     */
-    private fun startSessionDiscovery() {
-        val contactIds = _dashboardState.value.contacts.map { it.id }
+    private fun startSessionDiscovery(contactIds: List<String>) {
         if (contactIds.isEmpty()) {
-            Log.d("SOS_AUDIT", "Discovery: No contacts to listen for.")
+            _activeSessions.value = emptyList()
             sessionListenerJob?.remove()
-            _dashboardState.value = _dashboardState.value.copy(activeEmergencySession = null)
             return
         }
 
@@ -160,38 +185,12 @@ class DashboardViewModel(
                     return@addSnapshotListener
                 }
 
-                if (snapshot != null && !snapshot.isEmpty) {
+                if (snapshot != null) {
                     val sessions = snapshot.documents.mapNotNull { it.toObject(SosSession::class.java) }
-                    
-                    // Filter out dismissed sessions
-                    val activeSession = sessions.firstOrNull { session -> 
-                        !_dashboardState.value.dismissedSessions.contains(session.sessionId)
-                    }
-
-                    _dashboardState.value = _dashboardState.value.copy(
-                        activeEmergencySession = activeSession
-                    )
-                    
-                    updateContactStatuses(sessions)
-                } else {
-                    _dashboardState.value = _dashboardState.value.copy(
-                        activeEmergencySession = null
-                    )
-                    updateContactStatuses(emptyList())
+                    _activeSessions.value = sessions
+                    Log.d("SOS_AUDIT", "SESSION_DISCOVERY_UPDATE: Found ${sessions.size} active sessions")
                 }
             }
-    }
-
-    private fun updateContactStatuses(activeSessions: List<SosSession>) {
-        val updatedContacts = _dashboardState.value.contacts.map { contact ->
-            val session = activeSessions.find { it.senderId == contact.id }
-            if (session != null) {
-                contact.copy(status = ContactStatus.EMERGENCY, activeSession = session)
-            } else {
-                contact.copy(status = ContactStatus.ONLINE, activeSession = null)
-            }
-        }
-        _dashboardState.value = _dashboardState.value.copy(contacts = updatedContacts)
     }
 
     fun addContact(code: String, onResult: (Result<Unit>) -> Unit) {
@@ -208,16 +207,18 @@ class DashboardViewModel(
     }
     
     fun dismissSession(sessionId: String) {
-        val dismissed = _dashboardState.value.dismissedSessions + sessionId
-        _dashboardState.value = _dashboardState.value.copy(
-            dismissedSessions = dismissed,
-            activeEmergencySession = null
-        )
+        _dashboardState.update { it.copy(
+            dismissedSessions = it.dismissedSessions + sessionId
+        ) }
     }
 
     fun loadRecordingsForUser(userId: String) {
         val recordings = recordingManager.getRecordingsForUser(userId)
-        _dashboardState.value = _dashboardState.value.copy(selectedUserRecordings = recordings)
+        _dashboardState.update { it.copy(selectedUserRecordings = recordings) }
+    }
+
+    fun selectPlaybackRecording(recording: RecordingInfo?) {
+        _dashboardState.update { it.copy(selectedPlaybackRecording = recording) }
     }
 
     override fun onCleared() {

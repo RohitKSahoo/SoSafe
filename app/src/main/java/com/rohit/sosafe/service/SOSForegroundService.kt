@@ -51,6 +51,7 @@ class SOSForegroundService : Service() {
     private var isEmergencyActive = false
     private var sessionId: String = ""
     private var audioSequence = 0
+    private var lastKnownLocation: GeoPoint? = null
     
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -213,7 +214,6 @@ class SOSForegroundService : Service() {
         Log.d(AUDIT_TAG, "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
         sessionListenerRegistration = db.collection(SoSafeContract.Collections.SESSIONS)
             .whereIn(SoSafeContract.Fields.SENDER_ID, contacts)
-            .whereEqualTo(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ACTIVE)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) {
                     Log.e(AUDIT_TAG, "SERVICE_SESSION_LISTENER_ERROR: ${e.message}")
@@ -221,34 +221,42 @@ class SOSForegroundService : Service() {
                 }
 
                 snapshot?.documentChanges?.forEach { change ->
+                    val session = change.document.toObject(SosSession::class.java)
+                    val sId = session.sessionId.ifEmpty { change.document.id }
+                    val senderId = session.senderId
+
                     when (change.type) {
                         DocumentChange.Type.ADDED -> {
-                            val session = change.document.toObject(SosSession::class.java)
-                            triggerSosIncomingAlert(
-                                session.sessionId, 
-                                session.senderId, 
-                                "User ${session.senderId.take(4)}"
-                            )
+                            if (session.status == SoSafeContract.Status.ACTIVE) {
+                                triggerSosIncomingAlert(
+                                    sId, 
+                                    senderId, 
+                                    "User ${senderId.take(4)}"
+                                )
+                            }
+                        }
+                        DocumentChange.Type.MODIFIED -> {
+                            // If status changed to ENDED, save metadata and finalize
+                            if (session.status == SoSafeContract.Status.ENDED) {
+                                val loc = session.lastLocation
+                                if (loc != null && senderId.isNotEmpty()) {
+                                    serviceScope.launch {
+                                        recordingManager.saveMetadata(senderId, sId, loc.latitude, loc.longitude, contactNames[senderId] ?: "")
+                                        recordingManager.finalizeRecording(senderId, sId)
+                                    }
+                                }
+                                
+                                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                                notificationManager.cancel(sId.hashCode())
+                                notifiedSessions.remove(sId)
+                            }
                         }
                         DocumentChange.Type.REMOVED -> {
-                            val session = change.document.toObject(SosSession::class.java)
-                            val sId = session.sessionId.ifEmpty { change.document.id }
-                            val senderId = session.senderId
-                            
                             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                             notificationManager.cancel(sId.hashCode())
                             notifiedSessions.remove(sId)
-                            Log.d(AUDIT_TAG, "SESSION_REMOVED_LISTENER: $sId ended.")
-                            
-                            // Guardian side: Finalize recording in background service context
-                            if (senderId.isNotEmpty()) {
-                                serviceScope.launch {
-                                    Log.d(AUDIT_TAG, "GUARDIAN_AUTO_FINALIZE_START: Session $sId")
-                                    recordingManager.finalizeRecording(senderId, sId)
-                                }
-                            }
+                            Log.d(AUDIT_TAG, "SESSION_REMOVED_LISTENER: $sId removed from DB.")
                         }
-                        else -> {}
                     }
                 }
             }
@@ -371,6 +379,8 @@ class SOSForegroundService : Service() {
         
         val sessionToClose = sessionId
         val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
+        val finalLocation = lastKnownLocation
+        
         isEmergencyActive = false
         ServiceState.setEmergencyActive(false)
         
@@ -390,11 +400,16 @@ class SOSForegroundService : Service() {
         serviceScope.launch {
             try {
                 withContext(NonCancellable) {
+                    // Update Firestore status to ENDED
                     db.collection(SoSafeContract.Collections.SESSIONS).document(sessionToClose)
                         .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED).await()
+                    
                     Log.d(AUDIT_TAG, "SESSION_STATUS_UPDATED: ENDED ($sessionToClose)")
                     
-                    // Finalize local recording on Sender side
+                    // Finalize local recording on Sender side and save metadata
+                    if (finalLocation != null) {
+                        recordingManager.saveMetadata(myId, sessionToClose, finalLocation.latitude, finalLocation.longitude, "Me")
+                    }
                     recordingManager.finalizeRecording(myId, sessionToClose)
                     Log.d(AUDIT_TAG, "SENDER_LOCAL_FINALIZE_DONE: $sessionToClose")
                 }
@@ -411,7 +426,10 @@ class SOSForegroundService : Service() {
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000).build()
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
-                locationResult.lastLocation?.let { uploadLocation(it.latitude, it.longitude) }
+                locationResult.lastLocation?.let { 
+                    lastKnownLocation = GeoPoint(it.latitude, it.longitude)
+                    uploadLocation(it.latitude, it.longitude) 
+                }
             }
         }
         fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback!!, Looper.getMainLooper())
@@ -437,7 +455,8 @@ class SOSForegroundService : Service() {
             currentAudioFile = File(cacheDir, "chunk_${sessionId}_${audioSequence}.aac")
             mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
             mediaRecorder?.apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
+                // IMPROVED: Use VOICE_COMMUNICATION for better mic sensitivity/hardware AGC
+                setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setOutputFile(currentAudioFile?.absolutePath)
@@ -497,6 +516,18 @@ class SOSForegroundService : Service() {
         val wasEmergencyActive = isEmergencyActive
         val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
         
+        // STOP ALL ACTIVE LOOPS IMMEDIATELY
+        isEmergencyActive = false
+        ServiceState.setEmergencyActive(false)
+        ServiceState.setGuardianActive(false)
+        
+        audioHandler.removeCallbacksAndMessages(null)
+        mediaRecorder?.apply {
+            try { stop() } catch(e: Exception) {}
+            release()
+        }
+        mediaRecorder = null
+        
         if (wasEmergencyActive && finalSessionId.isNotEmpty()) {
             Log.w(AUDIT_TAG, "EMERGENCY_ACTIVE_ON_DESTROY: Cleaning up session $finalSessionId")
             @OptIn(DelicateCoroutinesApi::class)
@@ -515,13 +546,8 @@ class SOSForegroundService : Service() {
             }
         }
         
-        isEmergencyActive = false
-        ServiceState.setEmergencyActive(false)
-        ServiceState.setGuardianActive(false)
         sosTriggerManager?.stopDetection()
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
-        audioHandler.removeCallbacksAndMessages(null)
-        mediaRecorder?.release()
         webrtcManager?.stop()
         sessionListenerRegistration?.remove()
         userListenerRegistration?.remove()
