@@ -3,6 +3,7 @@ package com.rohit.sosafe.utils
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.MediaRecorder
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -18,7 +19,8 @@ class WebRTCManager(
     private val context: Context,
     private val sessionId: String,
     private val onConnectionStateChange: (PeerConnection.PeerConnectionState) -> Unit,
-    private val onAudioTrackReceived: (AudioTrack) -> Unit = {}
+    private val onAudioTrackReceived: (AudioTrack) -> Unit = {},
+    private val isReceiver: Boolean = false // Distinguish between Guardian (Receiver) and Sender
 ) {
     private val TAG = "WebRTC_MANAGER"
     private val db = Firebase.firestore
@@ -41,11 +43,21 @@ class WebRTCManager(
 
         val options = PeerConnectionFactory.Options()
         
-        // IMPROVED: Use VOICE_COMMUNICATION for better mic sensitivity and hardware processing
-        val audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
-            .setUseHardwareAcousticEchoCanceler(true)
+        // For the Guardian (Receiver), we use USAGE_MEDIA to force dual-speaker output.
+        // For the Sender, we use VOICE_COMMUNICATION for better mic processing.
+        val audioDeviceModuleBuilder = JavaAudioDeviceModule.builder(context.applicationContext)
+            .setUseHardwareAcousticEchoCanceler(!isReceiver) 
             .setUseHardwareNoiseSuppressor(true)
-            .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setAudioSource(if (isReceiver) MediaRecorder.AudioSource.MIC else MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(if (isReceiver) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(if (isReceiver) AudioAttributes.CONTENT_TYPE_MUSIC else AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        
+        audioDeviceModuleBuilder.setAudioAttributes(audioAttributes)
+
+        val audioDeviceModule = audioDeviceModuleBuilder
             .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
                 override fun onWebRtcAudioRecordInitError(p0: String?) { Log.e(TAG, "AudioRecord Init Error: $p0") }
                 override fun onWebRtcAudioRecordStartError(p0: JavaAudioDeviceModule.AudioRecordStartErrorCode?, p1: String?) { Log.e(TAG, "AudioRecord Start Error: $p1") }

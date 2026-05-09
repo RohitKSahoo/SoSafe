@@ -178,7 +178,6 @@ class DashboardViewModel(
         sessionListenerJob?.remove()
         sessionListenerJob = db.collection(SoSafeContract.Collections.SESSIONS)
             .whereIn(SoSafeContract.Fields.SENDER_ID, contactIds)
-            .whereEqualTo(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ACTIVE)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) {
                     Log.e("SOS_AUDIT", "LISTENER_ERROR: ${e.message}")
@@ -187,6 +186,7 @@ class DashboardViewModel(
 
                 if (snapshot != null) {
                     val sessions = snapshot.documents.mapNotNull { it.toObject(SosSession::class.java) }
+                        .filter { it.status == SoSafeContract.Status.ACTIVE }
                     _activeSessions.value = sessions
                     Log.d("SOS_AUDIT", "SESSION_DISCOVERY_UPDATE: Found ${sessions.size} active sessions")
                 }

@@ -1,6 +1,7 @@
 package com.rohit.sosafe.utils
 
 import android.util.Log
+import com.rohit.sosafe.BuildConfig
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.asRequestBody
@@ -10,9 +11,8 @@ import java.io.IOException
 
 class CloudinaryUploader {
 
-    // UPDATE THESE WITH YOUR CLOUDINARY CREDENTIALS
-    private val CLOUD_NAME = "dgvzyzahf"
-    private val UPLOAD_PRESET = "SoSafe"
+    private val CLOUD_NAME = BuildConfig.CLOUDINARY_CLOUD_NAME
+    private val UPLOAD_PRESET = BuildConfig.CLOUDINARY_UPLOAD_PRESET
 
     private val client = OkHttpClient()
 

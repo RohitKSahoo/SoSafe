@@ -208,6 +208,24 @@ store(sequence = sequenceCounter)
 
 ---
 
+# 🎧 6.1. REAL-TIME AUDIO (WEBRTC)
+
+### ✅ Hybrid Approach:
+* **Primary**: WebRTC for ultra-low latency (~1-2s) audio streaming.
+* **Fallback/History**: Sequence-based chunks stored in Cloudinary and referenced in Firestore.
+
+### WebRTC Signaling Channel:
+* Uses the active session document in Firestore to exchange:
+  * `webrtcOffer`
+  * `webrtcAnswer`
+  * `iceCandidates` (array of objects)
+
+### ⚡ Performance:
+* Latency: ~1-2 seconds when peer connection is established.
+* Fallback to chunk playback if connection fails.
+
+---
+
 # ⚡ 7. AUDIO LATENCY OPTIMIZATION
 
 ### CURRENT:

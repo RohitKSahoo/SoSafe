@@ -1,6 +1,7 @@
 package com.rohit.sosafe.architecture
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.util.Log
 import com.rohit.sosafe.data.contracts.AudioChunk
@@ -12,13 +13,21 @@ import kotlinx.coroutines.flow.collectLatest
 /**
  * Deterministic Audio Player.
  * Only plays when SessionState is ACTIVE.
+ * Routed to USAGE_MEDIA for dual-speaker output.
  */
 class AudioPlaybackController(
     private val context: Context,
     private val sessionState: StateFlow<SessionState>
 ) {
     private val TAG = "AudioPlayback"
-    private val mediaPlayer = MediaPlayer()
+    private val mediaPlayer = MediaPlayer().apply {
+        setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+        )
+    }
     private val queue = mutableListOf<AudioChunk>()
     private var isCurrentlyPlaying = false
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -58,6 +67,12 @@ class AudioPlaybackController(
 
         try {
             mediaPlayer.reset()
+            mediaPlayer.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
             mediaPlayer.setDataSource(next.fileUrl)
             mediaPlayer.prepareAsync()
             mediaPlayer.setOnPreparedListener { it.start() }

@@ -59,6 +59,7 @@ class SOSForegroundService : Service() {
     private val db = Firebase.firestore
     
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val cleanupScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val cloudinaryUploader = CloudinaryUploader()
 
     private var mediaRecorder: MediaRecorder? = null
@@ -530,8 +531,7 @@ class SOSForegroundService : Service() {
         
         if (wasEmergencyActive && finalSessionId.isNotEmpty()) {
             Log.w(AUDIT_TAG, "EMERGENCY_ACTIVE_ON_DESTROY: Cleaning up session $finalSessionId")
-            @OptIn(DelicateCoroutinesApi::class)
-            GlobalScope.launch(Dispatchers.IO) {
+            cleanupScope.launch {
                 try {
                     Firebase.firestore.collection(SoSafeContract.Collections.SESSIONS)
                         .document(finalSessionId)

@@ -124,16 +124,17 @@ There is no reliable, instant, hands-free mechanism to alert trusted contacts wi
 
 ---
 
-#### 3. Audio Transmission (Chunk-Based)
+#### 3. Audio Transmission (Hybrid: WebRTC + Chunk-Based)
 
-* **Description**: Continuous microphone capture uploaded in short intervals
-* **User Story**: As a user, I want my surroundings recorded so that others understand my situation
+* **Description**: Continuous microphone capture streamed via WebRTC for real-time monitoring, with chunk-based backup uploaded in short intervals.
+* **User Story**: As a user, I want my surroundings recorded and streamed live so that others understand my situation in real-time.
 * **Acceptance Criteria**:
 
-  * [ ] Audio recorded in 3–5 second chunks
-  * [ ] Chunks uploaded immediately after recording
-  * [ ] Receiver can play near real-time audio
-* **Success Metric**: <5 second delay in playback
+  * [ ] Real-time audio streaming via WebRTC when available.
+  * [ ] Fallback/Backup: Audio recorded in 3–5 second chunks.
+  * [ ] Chunks uploaded immediately after recording for history.
+  * [ ] Receiver can play real-time audio or recorded chunks.
+* **Success Metric**: <2 second delay for WebRTC, <5 second delay for chunks.
 
 ---
 

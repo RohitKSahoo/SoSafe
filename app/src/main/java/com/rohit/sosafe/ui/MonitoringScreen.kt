@@ -1,7 +1,10 @@
 package com.rohit.sosafe.ui
 
 import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -81,20 +84,45 @@ fun MonitoringScreen(
 
     var lastLocation by remember { mutableStateOf(playbackInfo?.lastLocation ?: session?.lastLocation) }
 
-    // WebRTC State (Still needed for UI status, but logic decoupled)
+    // WebRTC State
     var webrtcState by remember { mutableStateOf(PeerConnection.PeerConnectionState.NEW) }
     val isWebRTCActive = webrtcState == PeerConnection.PeerConnectionState.CONNECTED
+
+    // Helper to force speakerphone routing
+    val forceSpeakerphone = {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        try {
+            // MODE_NORMAL is essential for dual-speaker media playback
+            audioManager.mode = AudioManager.MODE_NORMAL
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val devices = audioManager.availableCommunicationDevices
+                val speaker = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (speaker != null) {
+                    audioManager.setCommunicationDevice(speaker)
+                }
+            }
+            audioManager.isSpeakerphoneOn = true
+        } catch (e: Exception) {
+            Log.e("MonitoringScreen", "Failed to force speakerphone: ${e.message}")
+        }
+    }
 
     val webrtcManager = remember(session?.sessionId ?: playbackInfo?.sessionId) {
         if (session != null && !isPlayback) {
             WebRTCManager(
                 context = context,
                 sessionId = session.sessionId,
+                isReceiver = true, // Force use of Media Stream for dual speakers
                 onConnectionStateChange = { newState ->
                     webrtcState = newState
+                    if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
+                        forceSpeakerphone()
+                    }
                 },
                 onAudioTrackReceived = { track ->
                     track.setEnabled(true)
+                    forceSpeakerphone()
                 }
             )
         } else null
@@ -103,6 +131,12 @@ fun MonitoringScreen(
     // Lifecycle Management
     LaunchedEffect(session?.sessionId) {
         if (!isPlayback) {
+            forceSpeakerphone()
+            
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxMusicVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVolume, 0)
+            
             sessionController?.startMonitoring()
             webrtcManager?.startReceiver()
         }
@@ -113,6 +147,14 @@ fun MonitoringScreen(
             sessionController?.stopMonitoring()
             playbackController?.release()
             webrtcManager?.stop()
+            
+            // Restore audio settings
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            }
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
         }
     }
 
