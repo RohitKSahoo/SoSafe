@@ -1,6 +1,7 @@
 package com.rohit.sosafe.ui
 
 import android.content.Context
+import android.media.MediaPlayer
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -34,6 +35,7 @@ import com.rohit.sosafe.ui.theme.*
 import com.rohit.sosafe.utils.RecordingInfo
 import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.WebRTCManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -65,7 +67,11 @@ fun MonitoringScreen(
         } else null
     }
     
-    val sessionState by (sessionController?.sessionState ?: remember { mutableStateOf(SessionState.IDLE) }).collectAsState()
+    val sessionState by if (sessionController != null) {
+        sessionController.sessionState.collectAsState()
+    } else {
+        remember { mutableStateOf(SessionState.IDLE) }
+    }
     
     val playbackController = remember(session?.sessionId) {
         if (sessionController != null) {
@@ -335,11 +341,64 @@ fun StatusPlayerUI(
 
 @Composable
 fun PlaybackPlayer(file: File) {
-    // ... (Keep existing PlaybackPlayer for archived sessions as it is decoupled)
     val context = LocalContext.current
-    val mediaPlayer = remember { MediaPlayer().apply {
-        setDataSource(file.absolutePath)
-        prepare()
-    } }
-    // Implementation omitted for brevity but remains same as previously
+    val mediaPlayer = remember(file) { 
+        MediaPlayer().apply {
+            setDataSource(file.absolutePath)
+            prepare()
+        }
+    }
+    
+    var isPlaying by remember { mutableStateOf(false) }
+    val duration by remember { mutableStateOf(mediaPlayer.duration) }
+    var position by remember { mutableStateOf(0) }
+
+    DisposableEffect(file) {
+        mediaPlayer.setOnCompletionListener { isPlaying = false }
+        onDispose { 
+            mediaPlayer.release() 
+        }
+    }
+
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            position = mediaPlayer.currentPosition
+            delay(500)
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(Black)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = {
+            if (isPlaying) mediaPlayer.pause() else mediaPlayer.start()
+            isPlaying = !isPlaying
+        }) {
+            Icon(
+                if (isPlaying) Icons.Default.Close else Icons.Default.Mic, 
+                contentDescription = null, 
+                tint = SuccessGreen
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column {
+            Text(
+                text = if (isPlaying) "PLAYING RECORDING..." else "RECORDING READY",
+                color = SuccessGreen,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            LinearProgressIndicator(
+                progress = { if (duration > 0) position.toFloat() / duration else 0f },
+                modifier = Modifier.fillMaxWidth().height(2.dp).padding(top = 4.dp),
+                color = SuccessGreen,
+                trackColor = MediumGrey
+            )
+        }
+    }
 }
