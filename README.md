@@ -19,11 +19,9 @@ Built with a focus on speed and reliability, SoSafe addresses the critical need 
 
 ## 📱 Preview
 
-| ![Dashboard](assets/placeholder.png) | ![Monitoring](assets/placeholder.png) | ![Alert](assets/placeholder.png) |
-| :---: | :---: | :---: |
-| Dashboard | Live Monitoring | Incoming Alert |
-
-*(Replace placeholders with actual screenshots)*
+| ![Dashboard](assets/SoSafe1.png) | ![Monitoring](assets/SoSafe2.png) | ![Alert](assets/SoSafe3.png) | ![Details](assets/SoSafe4.png) |
+| :---: | :---: | :---: | :---: |
+| Dashboard | Live Monitoring | Incoming Alert | Details |
 
 ---
 
