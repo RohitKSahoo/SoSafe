@@ -271,12 +271,21 @@ class UserManager(private val context: Context) {
         val formattedTargetCode = targetCode.replace("-", "").trim().uppercase()
 
         try {
-            var myName = "User $myCode"
+            // Retrieve custom name that I gave to target or fallback to myCode
+            var nameGivenToMe = "User $myCode"
+            val targetUserRows = SupabaseApi.select("users", "user_id=eq.$formattedTargetCode")
+            if (targetUserRows.length() > 0) {
+                val targetNamesObj = targetUserRows.getJSONObject(0).optJSONObject("contact_names") ?: JSONObject()
+                if (targetNamesObj.has(myCode)) {
+                    nameGivenToMe = targetNamesObj.getString(myCode)
+                }
+            }
+
             val myRows = SupabaseApi.select("users", "user_id=eq.$myCode")
             if (myRows.length() > 0) {
-                val namesObj = myRows.getJSONObject(0).optJSONObject("contact_names") ?: JSONObject()
-                if (namesObj.has(myCode)) {
-                    myName = namesObj.getString(myCode)
+                val myNamesObj = myRows.getJSONObject(0).optJSONObject("contact_names") ?: JSONObject()
+                if (myNamesObj.has(myCode) && myNamesObj.getString(myCode).isNotBlank()) {
+                    nameGivenToMe = myNamesObj.getString(myCode)
                 }
             }
 
@@ -286,17 +295,17 @@ class UserManager(private val context: Context) {
             removeContactFromUserList(formattedTargetCode, myCode)
 
             // 3. Create removal notification document
-            val notifId = "${myCode}_${formattedTargetCode}"
+            val notifId = "${myCode}_${formattedTargetCode}_${System.currentTimeMillis()}"
             val notifJson = JSONObject().apply {
                 put("notification_id", notifId)
                 put("remover_id", myCode)
-                put("remover_name", myName)
+                put("remover_name", nameGivenToMe)
                 put("target_user_id", formattedTargetCode)
                 put("created_at", System.currentTimeMillis())
             }
             SupabaseApi.upsert("removal_notifications", notifJson, onConflict = "notification_id")
 
-            Log.d(tag, "Contact $formattedTargetCode removed by $myCode")
+            Log.d(tag, "Contact $formattedTargetCode removed by $myCode (Notified as: $nameGivenToMe)")
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(tag, "Error removing contact: ${e.message}")

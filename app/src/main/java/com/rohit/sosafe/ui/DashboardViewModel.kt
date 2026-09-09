@@ -192,7 +192,10 @@ class DashboardViewModel(
         removalRealtime?.stop()
 
         viewModelScope.launch(Dispatchers.IO) {
-            fetchRemovalNotifications(userCode)
+            while (true) {
+                fetchRemovalNotifications(userCode)
+                kotlinx.coroutines.delay(3000)
+            }
         }
 
         removalRealtime = SupabaseRealtimeClient("removal_notifications", "target_user_id", userCode) { type, record ->
