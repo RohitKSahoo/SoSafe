@@ -303,9 +303,14 @@ class SOSForegroundService : Service() {
         val mode = streamingModeManager.getStreamingMode()
         
         val notification = createNotification("!!! EMERGENCY SOS ACTIVE !!!", "Broadcasting alerts, location and audio ($mode).")
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, 
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         
-        serviceScope.launch {
+        serviceScope.launch(Dispatchers.IO) {
             val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
             
             val sessionJson = JSONObject().apply {
@@ -428,12 +433,18 @@ class SOSForegroundService : Service() {
     }
 
     private fun uploadLocation(lat: Double, lng: Double) {
-        val json = JSONObject().apply {
-            put("last_latitude", lat)
-            put("last_longitude", lng)
-            put("last_updated_at", System.currentTimeMillis())
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val json = JSONObject().apply {
+                    put("last_latitude", lat)
+                    put("last_longitude", lng)
+                    put("last_updated_at", System.currentTimeMillis())
+                }
+                SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+            } catch (e: Exception) {
+                Log.e(AUDIT_TAG, "Failed to upload location: ${e.message}")
+            }
         }
-        SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
     }
 
     private fun startAudioChunking() {
