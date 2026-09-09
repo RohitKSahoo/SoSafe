@@ -38,7 +38,8 @@ import com.rohit.sosafe.utils.SOSTriggerManager
 import com.rohit.sosafe.utils.ServiceState
 import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.*
-import kotlinx.coroutines.tasks.await
+import org.json.JSONObject
+import com.rohit.sosafe.data.supabase.SupabaseApi
 import java.io.File
 
 class SOSForegroundService : Service() {
@@ -179,88 +180,85 @@ class SOSForegroundService : Service() {
         }
     }
 
+    private var userRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
+    private var sessionsRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
+
     private fun startGuardianSessionDiscovery() {
         val myCode = userManager.getUserCodeSync() ?: return
 
         val notification = createNotification("SoSafe Guardian Active", "Monitoring for emergency sessions...")
         startForeground(NOTIFICATION_ID, notification)
 
-        userListenerRegistration?.remove()
-        userListenerRegistration = db.collection(SoSafeContract.Collections.USERS)
-            .document(myCode)
-            .addSnapshotListener { snapshot, e ->
-                if (e != null) {
-                    Log.e(AUDIT_TAG, "SERVICE_USER_LISTENER_ERROR: ${e.message}")
-                    return@addSnapshotListener
+        userRealtimeService?.stop()
+
+        serviceScope.launch(Dispatchers.IO) {
+            fetchServiceUserContacts(myCode)
+        }
+
+        userRealtimeService = com.rohit.sosafe.data.supabase.SupabaseRealtimeClient("users", "user_id", myCode) { _, _ ->
+            serviceScope.launch(Dispatchers.IO) {
+                fetchServiceUserContacts(myCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun fetchServiceUserContacts(myCode: String) {
+        try {
+            val rows = SupabaseApi.select("users", "user_id=eq.$myCode")
+            if (rows.length() > 0) {
+                val userObj = rows.getJSONObject(0)
+                val contactsArr = userObj.optJSONArray("contacts") ?: org.json.JSONArray()
+                val namesObj = userObj.optJSONObject("contact_names") ?: org.json.JSONObject()
+
+                val contacts = mutableListOf<String>()
+                for (i in 0 until contactsArr.length()) {
+                    contacts.add(contactsArr.getString(i))
                 }
 
-                if (snapshot != null && snapshot.exists()) {
-                    @Suppress("UNCHECKED_CAST")
-                    val contacts = snapshot.get(SoSafeContract.Fields.CONTACTS) as? List<String> ?: emptyList()
-                    @Suppress("UNCHECKED_CAST")
-                    contactNames = snapshot.get(SoSafeContract.Fields.CONTACT_NAMES) as? Map<String, String> ?: emptyMap()
-                    
-                    updateSosAlertListener(contacts)
+                val map = mutableMapOf<String, String>()
+                val keys = namesObj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    map[k] = namesObj.getString(k)
                 }
+                contactNames = map
+
+                updateSosAlertListener(contacts)
             }
+        } catch (e: Exception) {
+            Log.e(AUDIT_TAG, "SERVICE_USER_FETCH_ERROR: ${e.message}")
+        }
     }
 
     private fun updateSosAlertListener(contacts: List<String>) {
-        sessionListenerRegistration?.remove()
+        sessionsRealtimeService?.stop()
         if (contacts.isEmpty()) {
             Log.d(AUDIT_TAG, "No contacts to monitor in service.")
             return
         }
 
         Log.d(AUDIT_TAG, "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
-        sessionListenerRegistration = db.collection(SoSafeContract.Collections.SESSIONS)
-            .whereIn(SoSafeContract.Fields.SENDER_ID, contacts)
-            .addSnapshotListener { snapshot, e ->
-                if (e != null) {
-                    Log.e(AUDIT_TAG, "SERVICE_SESSION_LISTENER_ERROR: ${e.message}")
-                    return@addSnapshotListener
-                }
 
-                snapshot?.documentChanges?.forEach { change ->
-                    val session = change.document.toObject(SosSession::class.java)
-                    val sId = session.sessionId.ifEmpty { change.document.id }
-                    val senderId = session.senderId
+        sessionsRealtimeService = com.rohit.sosafe.data.supabase.SupabaseRealtimeClient("sessions") { type, record ->
+            val sId = record.optString("session_id")
+            val senderId = record.optString("sender_id")
+            val status = record.optString("status")
 
-                    when (change.type) {
-                        DocumentChange.Type.ADDED -> {
-                            if (session.status == SoSafeContract.Status.ACTIVE) {
-                                triggerSosIncomingAlert(
-                                    sId, 
-                                    senderId, 
-                                    "User ${senderId.take(4)}"
-                                )
-                            }
-                        }
-                        DocumentChange.Type.MODIFIED -> {
-                            // If status changed to ENDED, save metadata and finalize
-                            if (session.status == SoSafeContract.Status.ENDED) {
-                                val loc = session.lastLocation
-                                if (loc != null && senderId.isNotEmpty()) {
-                                    serviceScope.launch {
-                                        recordingManager.saveMetadata(senderId, sId, loc.latitude, loc.longitude, contactNames[senderId] ?: "")
-                                        recordingManager.finalizeRecording(senderId, sId)
-                                    }
-                                }
-                                
-                                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                                notificationManager.cancel(sId.hashCode())
-                                notifiedSessions.remove(sId)
-                            }
-                        }
-                        DocumentChange.Type.REMOVED -> {
-                            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                            notificationManager.cancel(sId.hashCode())
-                            notifiedSessions.remove(sId)
-                            Log.d(AUDIT_TAG, "SESSION_REMOVED_LISTENER: $sId removed from DB.")
-                        }
+            if (senderId in contacts) {
+                if (type == "INSERT" || type == "UPDATE") {
+                    if (status == SoSafeContract.Status.ACTIVE) {
+                        triggerSosIncomingAlert(
+                            sId, 
+                            senderId, 
+                            contactNames[senderId] ?: "User ${senderId.take(4)}"
+                        )
+                    } else if (status == SoSafeContract.Status.ENDED) {
+                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        notificationManager.cancel(sId.hashCode())
                     }
                 }
             }
+        }.apply { start() }
     }
 
     private fun createFullScreenNotification(sessionId: String, senderId: String, senderName: String): Notification {
@@ -310,18 +308,17 @@ class SOSForegroundService : Service() {
         serviceScope.launch {
             val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
             
-            val sessionData = mapOf(
-                SoSafeContract.Fields.SESSION_ID to sessionId,
-                SoSafeContract.Fields.SENDER_ID to myId,
-                SoSafeContract.Fields.STATUS to SoSafeContract.Status.ACTIVE,
-                SoSafeContract.Fields.STARTED_AT to FieldValue.serverTimestamp(),
-                SoSafeContract.Fields.LAST_UPDATED_AT to FieldValue.serverTimestamp(),
-                SoSafeContract.Fields.STREAMING_MODE to mode.name
-            )
+            val sessionJson = JSONObject().apply {
+                put("session_id", sessionId)
+                put("sender_id", myId)
+                put("status", SoSafeContract.Status.ACTIVE)
+                put("started_at", System.currentTimeMillis())
+                put("last_updated_at", System.currentTimeMillis())
+                put("streaming_mode", mode.name)
+            }
 
             try {
-                db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-                    .set(sessionData).await()
+                SupabaseApi.upsert("sessions", sessionJson, onConflict = "session_id")
                 
                 Log.d(AUDIT_TAG, "SESSION_CREATED: $sessionId | MODE: $mode")
                 notifyGuardiansOfSOS(sessionId, myId)
@@ -348,7 +345,7 @@ class SOSForegroundService : Service() {
             context = this,
             sessionId = sessionId,
             onConnectionStateChange = { state ->
-                Log.d(AUDIT_TAG, "WebRTC State: $state")
+                Log.d(AUDIT_TAG, "WEBRTC_STATE: $state")
             }
         )
         webrtcManager?.startSender()
@@ -359,16 +356,7 @@ class SOSForegroundService : Service() {
             try {
                 val contacts = userManager.getContacts()
                 if (contacts.isEmpty()) return@launch
-
-                val guardianDocs = db.collection(SoSafeContract.Collections.USERS)
-                    .whereIn(SoSafeContract.Fields.USER_ID, contacts)
-                    .get()
-                    .await()
-
-                val tokens = guardianDocs.documents.mapNotNull { it.getString(SoSafeContract.Fields.FCM_TOKEN) }
-                if (tokens.isNotEmpty()) {
-                    Log.d(AUDIT_TAG, "NOTIFYING_GUARDIANS: Found ${tokens.size} tokens")
-                }
+                Log.d(AUDIT_TAG, "NOTIFYING_GUARDIANS: Found ${contacts.size} guardian contacts")
             } catch (e: Exception) {
                 Log.e(AUDIT_TAG, "Error notifying guardians: ${e.message}")
             }
@@ -401,9 +389,12 @@ class SOSForegroundService : Service() {
         serviceScope.launch {
             try {
                 withContext(NonCancellable) {
-                    // Update Firestore status to ENDED
-                    db.collection(SoSafeContract.Collections.SESSIONS).document(sessionToClose)
-                        .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED).await()
+                    // Update Supabase session status to ENDED
+                    val statusJson = JSONObject().apply {
+                        put("status", SoSafeContract.Status.ENDED)
+                        put("last_updated_at", System.currentTimeMillis())
+                    }
+                    SupabaseApi.update("sessions", "session_id=eq.$sessionToClose", statusJson)
                     
                     Log.d(AUDIT_TAG, "SESSION_STATUS_UPDATED: ENDED ($sessionToClose)")
                     
@@ -437,13 +428,12 @@ class SOSForegroundService : Service() {
     }
 
     private fun uploadLocation(lat: Double, lng: Double) {
-        val sessionRef = db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-        sessionRef.update(
-            mapOf(
-                SoSafeContract.Fields.LAST_LOCATION to GeoPoint(lat, lng),
-                SoSafeContract.Fields.LAST_UPDATED_AT to FieldValue.serverTimestamp()
-            )
-        )
+        val json = JSONObject().apply {
+            put("last_latitude", lat)
+            put("last_longitude", lng)
+            put("last_updated_at", System.currentTimeMillis())
+        }
+        SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
     }
 
     private fun startAudioChunking() {
@@ -452,12 +442,20 @@ class SOSForegroundService : Service() {
 
     private fun recordNextChunk() {
         if (!isEmergencyActive) return
+
+        val sequence = audioSequence++
+        val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
+        val outputFile = File(cacheDir, "audio_chunk_${sessionId}_$sequence.mp4")
+        currentAudioFile = outputFile
+
         try {
-            currentAudioFile = File(cacheDir, "chunk_${sessionId}_${audioSequence}.aac")
-            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
-            mediaRecorder?.apply {
-                // IMPROVED: Use VOICE_COMMUNICATION for better mic sensitivity/hardware AGC
-                setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(this)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setOutputFile(currentAudioFile?.absolutePath)
@@ -502,13 +500,15 @@ class SOSForegroundService : Service() {
     }
 
     private fun saveAudioUrlToFirestore(url: String, sequence: Int) {
-        val chunk = mapOf(
-            SoSafeContract.Fields.FILE_URL to url,
-            SoSafeContract.Fields.SEQUENCE to sequence,
-            SoSafeContract.Fields.DURATION to 3,
-            "createdAt" to FieldValue.serverTimestamp()
-        )
-        db.collection(SoSafeContract.getAudioChunksSubcollection(sessionId)).add(chunk)
+        serviceScope.launch(Dispatchers.IO) {
+            val json = JSONObject().apply {
+                put("session_id", sessionId)
+                put("file_url", url)
+                put("sequence", sequence)
+                put("duration", 3)
+            }
+            SupabaseApi.upsert("audio_chunks", json)
+        }
     }
 
     override fun onDestroy() {
@@ -533,10 +533,10 @@ class SOSForegroundService : Service() {
             Log.w(AUDIT_TAG, "EMERGENCY_ACTIVE_ON_DESTROY: Cleaning up session $finalSessionId")
             cleanupScope.launch {
                 try {
-                    Firebase.firestore.collection(SoSafeContract.Collections.SESSIONS)
-                        .document(finalSessionId)
-                        .update(SoSafeContract.Fields.STATUS, SoSafeContract.Status.ENDED)
-                        .await()
+                    val updateJson = JSONObject().apply {
+                        put("status", SoSafeContract.Status.ENDED)
+                    }
+                    SupabaseApi.update("sessions", "session_id=eq.$finalSessionId", updateJson)
                     
                     // Abrupt stop: Attempt to finalize what we have
                     RecordingManager(applicationContext).finalizeRecording(myId, finalSessionId)

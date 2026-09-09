@@ -28,9 +28,13 @@ android {
 
         val cloudName = localProperties.getProperty("cloudinary.cloud_name") ?: "dgvzyzahf"
         val uploadPreset = localProperties.getProperty("cloudinary.upload_preset") ?: "SoSafe"
+        val supabaseUrl = localProperties.getProperty("supabase.url") ?: "https://yxwoqeoxahkizyhbexoj.supabase.co"
+        val supabaseKey = localProperties.getProperty("supabase.key") ?: ""
 
         buildConfigField("String", "CLOUDINARY_CLOUD_NAME", "\"$cloudName\"")
         buildConfigField("String", "CLOUDINARY_UPLOAD_PRESET", "\"$uploadPreset\"")
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField("String", "SUPABASE_KEY", "\"$supabaseKey\"")
     }
 
     buildTypes {

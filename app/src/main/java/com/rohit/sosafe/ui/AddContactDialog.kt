@@ -3,10 +3,13 @@ package com.rohit.sosafe.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.rohit.sosafe.ui.theme.*
@@ -14,13 +17,16 @@ import com.rohit.sosafe.ui.theme.*
 @Composable
 fun AddContactDialog(
     onDismiss: () -> Unit,
-    onAdd: (String, String) -> Unit
+    onValidateCode: (String, (Result<Unit>) -> Unit) -> Unit,
+    onAdd: (String, String, (Result<Unit>) -> Unit) -> Unit
 ) {
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var step by remember { mutableIntStateOf(1) } // 1: Code, 2: Name
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = { if (!isLoading) onDismiss() }) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -53,34 +59,59 @@ fun AddContactDialog(
                 if (step == 1) {
                     TextField(
                         value = code,
-                        onValueChange = { if (it.length <= 8) code = it.uppercase() },
+                        onValueChange = { input ->
+                            val formatted = input.replace("-", "").replace(" ", "").uppercase()
+                            if (formatted.length <= 8) {
+                                code = formatted
+                                errorMessage = null
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Characters,
+                            autoCorrectEnabled = false
+                        ),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = Black,
                             unfocusedContainerColor = Black,
                             focusedTextColor = PureWhite,
                             unfocusedTextColor = PureWhite,
-                            focusedIndicatorColor = PureWhite,
-                            unfocusedIndicatorColor = MediumGrey
+                            focusedIndicatorColor = if (errorMessage != null) DangerRed else PureWhite,
+                            unfocusedIndicatorColor = if (errorMessage != null) DangerRed else MediumGrey
                         ),
                         placeholder = { Text("E.G. AB12CD34", color = MediumGrey) },
-                        singleLine = true
+                        singleLine = true,
+                        enabled = !isLoading
                     )
                 } else {
                     TextField(
                         value = name,
-                        onValueChange = { name = it },
+                        onValueChange = { 
+                            name = it
+                            errorMessage = null
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = Black,
                             unfocusedContainerColor = Black,
                             focusedTextColor = PureWhite,
                             unfocusedTextColor = PureWhite,
-                            focusedIndicatorColor = PureWhite,
-                            unfocusedIndicatorColor = MediumGrey
+                            focusedIndicatorColor = if (errorMessage != null) DangerRed else PureWhite,
+                            unfocusedIndicatorColor = if (errorMessage != null) DangerRed else MediumGrey
                         ),
                         placeholder = { Text("Enter Name", color = MediumGrey) },
-                        singleLine = true
+                        singleLine = true,
+                        enabled = !isLoading
+                    )
+                }
+
+                if (errorMessage != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = errorMessage!!,
+                        color = DangerRed,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
 
@@ -88,18 +119,44 @@ fun AddContactDialog(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(
+                        onClick = onDismiss,
+                        enabled = !isLoading
+                    ) {
                         Text("CANCEL", color = LightGrey)
                     }
                     Spacer(modifier = Modifier.width(16.dp))
                     Button(
                         onClick = { 
-                            if (step == 1) step = 2
-                            else onAdd(code, name.ifBlank { "User ${code.take(4)}" })
+                            if (step == 1) {
+                                isLoading = true
+                                errorMessage = null
+                                onValidateCode(code) { result ->
+                                    isLoading = false
+                                    if (result.isSuccess) {
+                                        step = 2
+                                    } else {
+                                        errorMessage = result.exceptionOrNull()?.message ?: "Invalid code"
+                                    }
+                                }
+                            } else {
+                                isLoading = true
+                                errorMessage = null
+                                val finalName = name.ifBlank { "User ${code.take(4)}" }
+                                onAdd(code, finalName) { result ->
+                                    isLoading = false
+                                    if (result.isSuccess) {
+                                        onDismiss()
+                                    } else {
+                                        errorMessage = result.exceptionOrNull()?.message ?: "Failed to save contact"
+                                    }
+                                }
+                            }
                         },
-                        enabled = if (step == 1) code.length == 8 else true,
+                        enabled = (if (step == 1) code.length == 8 else true) && !isLoading,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = PureWhite,
                             contentColor = Black,
@@ -108,7 +165,15 @@ fun AddContactDialog(
                         ),
                         shape = RoundedCornerShape(4.dp)
                     ) {
-                        Text(if (step == 1) "NEXT" else "CONFIRM", fontWeight = FontWeight.Bold)
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = Black,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(if (step == 1) "NEXT" else "CONFIRM", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

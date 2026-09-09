@@ -48,6 +48,10 @@ import org.osmdroid.views.overlay.Marker
 import org.webrtc.PeerConnection
 import java.io.File
 
+import com.rohit.sosafe.data.supabase.SupabaseApi
+import com.rohit.sosafe.data.supabase.SupabaseRealtimeClient
+import kotlinx.coroutines.Dispatchers
+
 @Composable
 fun MonitoringScreen(
     session: SosSession? = null,
@@ -57,7 +61,6 @@ fun MonitoringScreen(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
-    val db = Firebase.firestore
     val scope = rememberCoroutineScope()
     val recordingManager = remember { RecordingManager(context) }
     
@@ -66,7 +69,7 @@ fun MonitoringScreen(
     // NEW ARCHITECTURE: Controllers
     val sessionController = remember(session?.sessionId) {
         if (session != null && !isPlayback) {
-            SessionController(db, session.sessionId)
+            SessionController(session.sessionId)
         } else null
     }
     
@@ -163,46 +166,79 @@ fun MonitoringScreen(
         if (sessionState !is SessionState.ACTIVE || isPlayback) return@DisposableEffect onDispose {}
         
         val activeSession = sessionState as SessionState.ACTIVE
-        val registration = db.collection(SoSafeContract.Collections.SESSIONS)
-            .document(activeSession.sessionId)
-            .addSnapshotListener { snapshot, _ ->
-                snapshot?.getGeoPoint(SoSafeContract.Fields.LAST_LOCATION)?.let {
-                    lastLocation = it
-                }
+        val client = SupabaseRealtimeClient("sessions", "session_id", activeSession.sessionId) { _, record ->
+            val lat = record.optDouble("last_latitude", Double.NaN)
+            val lng = record.optDouble("last_longitude", Double.NaN)
+            if (!lat.isNaN() && !lng.isNaN()) {
+                lastLocation = com.google.firebase.firestore.GeoPoint(lat, lng)
             }
-        onDispose { registration.remove() }
+        }.apply { start() }
+
+        onDispose { client.stop() }
     }
 
     // Audio Chunk Listener (Bound to Session State)
+    var isInitialSnapshotLoaded by remember { mutableStateOf(false) }
+    var maxInitialSequence by remember { mutableIntStateOf(-1) }
+
     DisposableEffect(sessionState, isWebRTCActive) {
         if (sessionState !is SessionState.ACTIVE || isPlayback) return@DisposableEffect onDispose {}
         
         val activeSession = sessionState as SessionState.ACTIVE
-        val registration = db.collection(SoSafeContract.getAudioChunksSubcollection(activeSession.sessionId))
-            .orderBy(SoSafeContract.Fields.SEQUENCE, Query.Direction.ASCENDING)
-            .addSnapshotListener { snapshot, _ ->
-                snapshot?.documentChanges?.forEach { change ->
-                    if (change.type == DocumentChange.Type.ADDED) {
-                        val chunk = change.document.toObject(AudioChunk::class.java)
-                        
-                        // Only enqueue if WebRTC is not covering live audio
-                        if (!isWebRTCActive) {
-                            playbackController?.enqueue(chunk)
-                        }
-                        
-                        // Always archive
-                        scope.launch {
-                            recordingManager.downloadAndSaveChunk(
-                                session!!.senderId, 
-                                session.sessionId, 
-                                chunk.sequence, 
-                                chunk.fileUrl
-                            )
-                        }
+
+        // Initial fetch
+        scope.launch(Dispatchers.IO) {
+            try {
+                val rows = SupabaseApi.select("audio_chunks", "session_id=eq.${activeSession.sessionId}&order=sequence.asc")
+                var maxSeq = -1
+                for (i in 0 until rows.length()) {
+                    val seq = rows.getJSONObject(i).optInt("sequence", -1)
+                    if (seq > maxSeq) maxSeq = seq
+                }
+                maxInitialSequence = maxSeq
+                isInitialSnapshotLoaded = true
+                Log.d("MonitoringScreen", "Initial chunk snapshot loaded via Supabase. Max initial sequence: $maxInitialSequence")
+            } catch (e: Exception) {
+                Log.e("MonitoringScreen", "Error fetching initial chunks: ${e.message}")
+            }
+        }
+
+        val client = SupabaseRealtimeClient("audio_chunks", "session_id", activeSession.sessionId) { eventType, record ->
+            if (eventType == "INSERT" || eventType == "UPDATE") {
+                val fileUrl = record.optString("file_url")
+                val seq = record.optInt("sequence", 0)
+                val duration = record.optInt("duration", 3)
+                val createdAt = record.optLong("created_at", System.currentTimeMillis())
+
+                val chunk = AudioChunk(
+                    fileUrl = fileUrl,
+                    sequence = seq,
+                    duration = duration,
+                    createdAt = createdAt
+                )
+
+                if (seq > maxInitialSequence) {
+                    if (!isWebRTCActive) {
+                        playbackController?.enqueue(chunk)
                     }
                 }
+
+                scope.launch {
+                    recordingManager.downloadAndSaveChunk(
+                        session!!.senderId,
+                        session.sessionId,
+                        chunk.sequence,
+                        chunk.fileUrl
+                    )
+                }
             }
-        onDispose { registration.remove() }
+        }.apply { start() }
+
+        onDispose { 
+            client.stop()
+            isInitialSnapshotLoaded = false
+            maxInitialSequence = -1
+        }
     }
 
     // UI Rendering

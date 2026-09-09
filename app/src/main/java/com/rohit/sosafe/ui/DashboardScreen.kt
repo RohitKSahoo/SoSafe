@@ -78,6 +78,7 @@ fun DashboardScreen(
     var showMonitoringScreen by remember { mutableStateOf(false) }
     var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
     var contactToRename by remember { mutableStateOf<Contact?>(null) }
+    var contactToRemove by remember { mutableStateOf<Contact?>(null) }
     var contactForHistory by remember { mutableStateOf<Contact?>(null) }
 
     // Alert Popup Handling
@@ -105,6 +106,135 @@ fun DashboardScreen(
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissSession(session.sessionId) }) {
                     Text("DISMISS", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Pairing Request Dialog Handling (2-Step Guardian Confirmation with custom renaming)
+    if (state.pendingPairingRequests.isNotEmpty()) {
+        val request = state.pendingPairingRequests.first()
+        val requesterName = request.fromUserName.ifBlank { "User ${request.fromUserId}" }
+        var contactCustomName by remember(request.requestId) { 
+            mutableStateOf("") 
+        }
+
+        AlertDialog(
+            onDismissRequest = { viewModel.declinePairingRequest(request) },
+            title = { Text("LINK REQUEST", color = PureWhite, fontWeight = FontWeight.Bold) },
+            text = { 
+                Column {
+                    Text(
+                        "$requesterName (${request.fromUserId}) wants to add you as a contact/guardian.",
+                        color = LightGrey,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "NAME THIS CONTACT",
+                        color = PureWhite,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    TextField(
+                        value = contactCustomName,
+                        onValueChange = { contactCustomName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Black,
+                            unfocusedContainerColor = Black,
+                            focusedTextColor = PureWhite,
+                            unfocusedTextColor = PureWhite,
+                            focusedIndicatorColor = PureWhite,
+                            unfocusedIndicatorColor = MediumGrey
+                        ),
+                        placeholder = { Text("E.G. Mom, Guardian 1", color = MediumGrey) },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.acceptPairingRequest(request, contactCustomName) },
+                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("ACCEPT", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.declinePairingRequest(request) }) {
+                    Text("DECLINE", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Contact Removal Confirmation Dialog
+    if (contactToRemove != null) {
+        val target = contactToRemove!!
+        AlertDialog(
+            onDismissRequest = { contactToRemove = null },
+            title = { Text("REMOVE CONTACT", color = DangerRed, fontWeight = FontWeight.Bold) },
+            text = { 
+                Text(
+                    "Are you sure you want to remove ${target.name} (${target.id}) from your contacts? They will be unlinked and notified.",
+                    color = PureWhite
+                ) 
+            },
+            confirmButton = {
+                Button(
+                    onClick = { 
+                        viewModel.removeContact(target.id)
+                        contactToRemove = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("REMOVE", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { contactToRemove = null }) {
+                    Text("CANCEL", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Removal Notification Alert Dialog (Received on the other device)
+    if (state.pendingRemovalNotifications.isNotEmpty()) {
+        val notification = state.pendingRemovalNotifications.first()
+        val localSavedContact = state.contacts.find { it.id == notification.removerId }
+        val removerDisplayName = when {
+            localSavedContact != null && localSavedContact.name.isNotBlank() -> localSavedContact.name
+            notification.removerName.isNotBlank() && !notification.removerName.startsWith("User ") -> notification.removerName
+            else -> "User ${notification.removerId}"
+        }
+
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissRemovalNotification(notification) },
+            title = { Text("CONTACT REMOVED", color = DangerRed, fontWeight = FontWeight.Bold) },
+            text = { 
+                Text(
+                    "$removerDisplayName has removed you from their emergency contacts list.",
+                    color = PureWhite
+                ) 
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.dismissRemovalNotification(notification) },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("OK", fontWeight = FontWeight.Bold)
                 }
             },
             containerColor = DarkGrey,
@@ -168,6 +298,7 @@ fun DashboardScreen(
                                             contactForHistory = contact
                                         },
                                         onRenameClick = { contactToRename = it },
+                                        onRemoveClick = { contactToRemove = it },
                                         onStopSOS = onStopSOS
                                     )
                                 } else {
@@ -183,7 +314,8 @@ fun DashboardScreen(
                                                 contactForHistory = contact
                                             }
                                         },
-                                        onRenameClick = { contactToRename = it }
+                                        onRenameClick = { contactToRename = it },
+                                        onRemoveClick = { contactToRemove = it }
                                     )
                                 }
                             }
@@ -353,6 +485,7 @@ fun SenderDashboard(
     state: DashboardState, 
     onContactClick: (Contact) -> Unit, 
     onRenameClick: (Contact) -> Unit,
+    onRemoveClick: (Contact) -> Unit,
     onStopSOS: () -> Unit
 ) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -404,7 +537,8 @@ fun SenderDashboard(
             contacts = state.contacts, 
             showAddButton = false,
             onContactClick = onContactClick,
-            onRenameClick = onRenameClick
+            onRenameClick = onRenameClick,
+            onRemoveClick = onRemoveClick
         )
     }
 }
@@ -414,7 +548,8 @@ fun GuardianDashboard(
     state: DashboardState, 
     onAddContactClick: () -> Unit,
     onContactClick: (Contact) -> Unit,
-    onRenameClick: (Contact) -> Unit
+    onRenameClick: (Contact) -> Unit,
+    onRemoveClick: (Contact) -> Unit
 ) {
     Column {
         ContactsSection(
@@ -423,7 +558,8 @@ fun GuardianDashboard(
             showAddButton = true,
             onAddContactClick = onAddContactClick,
             onContactClick = onContactClick,
-            onRenameClick = onRenameClick
+            onRenameClick = onRenameClick,
+            onRemoveClick = onRemoveClick
         )
     }
 }
@@ -536,7 +672,8 @@ fun ContactsSection(
     showAddButton: Boolean,
     onAddContactClick: () -> Unit = {},
     onContactClick: (Contact) -> Unit = {},
-    onRenameClick: (Contact) -> Unit = {}
+    onRenameClick: (Contact) -> Unit = {},
+    onRemoveClick: (Contact) -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(text = title, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
@@ -558,7 +695,8 @@ fun ContactsSection(
                     ContactItem(
                         contact = contact, 
                         onClick = { onContactClick(contact) },
-                        onRenameClick = { onRenameClick(contact) }
+                        onRenameClick = { onRenameClick(contact) },
+                        onRemoveClick = { onRemoveClick(contact) }
                     ) 
                 }
             }
@@ -582,7 +720,7 @@ fun ContactsSection(
 }
 
 @Composable
-fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit) {
+fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit, onRemoveClick: () -> Unit) {
     val isEmergency = contact.status == ContactStatus.EMERGENCY
     
     Row(
@@ -644,8 +782,13 @@ fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit
                 Text("VIEW", color = PureWhite, style = MaterialTheme.typography.labelSmall)
             }
         } else {
-            IconButton(onClick = onRenameClick) {
-                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = LightGrey, modifier = Modifier.size(18.dp))
+            Row {
+                IconButton(onClick = onRenameClick) {
+                    Icon(Icons.Default.Edit, contentDescription = "Rename", tint = LightGrey, modifier = Modifier.size(18.dp))
+                }
+                IconButton(onClick = onRemoveClick) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove", tint = DangerRed, modifier = Modifier.size(18.dp))
+                }
             }
         }
     }
