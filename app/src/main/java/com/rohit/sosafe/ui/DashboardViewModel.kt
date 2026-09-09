@@ -254,7 +254,10 @@ class DashboardViewModel(
         sessionsRealtime?.stop()
 
         viewModelScope.launch(Dispatchers.IO) {
-            fetchActiveSessions(contactIds)
+            while (true) {
+                fetchActiveSessions(contactIds)
+                kotlinx.coroutines.delay(2000)
+            }
         }
 
         sessionsRealtime = SupabaseRealtimeClient("sessions") { type, record ->

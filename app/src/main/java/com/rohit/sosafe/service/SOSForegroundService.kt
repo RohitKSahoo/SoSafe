@@ -386,7 +386,7 @@ class SOSForegroundService : Service() {
         webrtcManager?.stop()
         webrtcManager = null
         
-        serviceScope.launch {
+        serviceScope.launch(Dispatchers.IO) {
             try {
                 withContext(NonCancellable) {
                     // Update Supabase session status to ENDED
