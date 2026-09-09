@@ -225,12 +225,15 @@ class WebRTCManager(
         if (sessionRealtime != null) return
 
         scope.launch(Dispatchers.IO) {
-            try {
-                val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
-                if (rows.length() > 0) {
-                    onRecord(rows.getJSONObject(0))
-                }
-            } catch (e: Exception) {}
+            while (true) {
+                try {
+                    val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
+                    if (rows.length() > 0) {
+                        onRecord(rows.getJSONObject(0))
+                    }
+                } catch (e: Exception) {}
+                kotlinx.coroutines.delay(1000)
+            }
         }
 
         sessionRealtime = SupabaseRealtimeClient("sessions", "session_id", sessionId) { type, record ->
