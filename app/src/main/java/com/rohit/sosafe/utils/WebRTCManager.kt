@@ -258,23 +258,24 @@ class WebRTCManager(
     }
 
     private fun startSessionRealtimeListener(onRecord: (JSONObject) -> Unit) {
-        if (sessionRealtime != null) return
-
+        // High-frequency polling (500ms) alongside Realtime WebSocket to guarantee instantaneous SDP handshake
         scope.launch(Dispatchers.IO) {
-            while (true) {
+            while (peerConnection != null) {
                 try {
                     val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
                     if (rows.length() > 0) {
                         onRecord(rows.getJSONObject(0))
                     }
                 } catch (e: Exception) {}
-                kotlinx.coroutines.delay(1000)
+                kotlinx.coroutines.delay(500)
             }
         }
 
-        sessionRealtime = SupabaseRealtimeClient("sessions", "session_id", sessionId) { type, record ->
-            onRecord(record)
-        }.apply { start() }
+        if (sessionRealtime == null) {
+            sessionRealtime = SupabaseRealtimeClient("sessions", "session_id", sessionId) { type, record ->
+                onRecord(record)
+            }.apply { start() }
+        }
     }
 
     fun stop() {

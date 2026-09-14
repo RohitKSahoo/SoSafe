@@ -243,9 +243,15 @@ fun DashboardScreen(
         )
     }
 
-    if (showMonitoringScreen && (selectedMonitoringSession != null || state.selectedPlaybackRecording != null)) {
+    val activeSessionFromState = remember(state.contacts, selectedMonitoringSession?.senderId) {
+        if (selectedMonitoringSession != null) {
+            state.contacts.find { it.id == selectedMonitoringSession?.senderId }?.activeSession ?: selectedMonitoringSession
+        } else null
+    }
+
+    if (showMonitoringScreen && (activeSessionFromState != null || state.selectedPlaybackRecording != null)) {
         MonitoringScreen(
-            session = selectedMonitoringSession,
+            session = activeSessionFromState,
             playbackInfo = state.selectedPlaybackRecording,
             displayName = if (state.selectedPlaybackRecording != null) {
                 selectedHistoryContact?.name ?: contactForHistory?.name ?: ""
