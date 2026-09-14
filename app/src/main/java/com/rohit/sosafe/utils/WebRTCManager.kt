@@ -165,6 +165,20 @@ class WebRTCManager(
                 onConnectionStateChange(newState)
             }
 
+            override fun onIceConnectionChange(iceState: PeerConnection.IceConnectionState?) {
+                Log.d(TAG, "ICE Connection state changed: $iceState")
+                when (iceState) {
+                    PeerConnection.IceConnectionState.CONNECTED,
+                    PeerConnection.IceConnectionState.COMPLETED -> {
+                        onConnectionStateChange(PeerConnection.PeerConnectionState.CONNECTED)
+                    }
+                    PeerConnection.IceConnectionState.DISCONNECTED,
+                    PeerConnection.IceConnectionState.FAILED -> {
+                        onConnectionStateChange(PeerConnection.PeerConnectionState.FAILED)
+                    }
+                    else -> {}
+                }
+            }
             override fun onTrack(transceiver: RtpTransceiver) {
                 if (transceiver.receiver.track() is AudioTrack) {
                     onAudioTrackReceived(transceiver.receiver.track() as AudioTrack)
@@ -172,7 +186,6 @@ class WebRTCManager(
             }
 
             override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
-            override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
             override fun onIceConnectionReceivingChange(p0: Boolean) {}
             override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
             override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
