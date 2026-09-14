@@ -57,19 +57,27 @@ class UserManager(private val context: Context) {
                 ""
             }
 
-            val json = JSONObject().apply {
-                put("user_id", userCode)
-                put("contacts", JSONArray())
-                put("contact_names", JSONObject())
-                put("fcm_token", fcmToken)
-                put("created_at", System.currentTimeMillis())
-            }
-
-            val success = SupabaseApi.upsert("users", json, onConflict = "user_id")
-            if (success) {
-                Log.d(tag, "User code '$userCode' stored in Supabase.")
+            // Check if user record already exists
+            val existing = SupabaseApi.select("users", "user_id=eq.$userCode")
+            if (existing.length() > 0) {
+                // User already exists, only update FCM token to preserve contacts and contact_names
+                updateFcmToken(userCode)
             } else {
-                Log.e(tag, "Error storing user code in Supabase.")
+                // New user initialization
+                val json = JSONObject().apply {
+                    put("user_id", userCode)
+                    put("contacts", JSONArray())
+                    put("contact_names", JSONObject())
+                    put("fcm_token", fcmToken)
+                    put("created_at", System.currentTimeMillis())
+                }
+
+                val success = SupabaseApi.upsert("users", json, onConflict = "user_id")
+                if (success) {
+                    Log.d(tag, "User code '$userCode' stored in Supabase.")
+                } else {
+                    Log.e(tag, "Error storing user code in Supabase.")
+                }
             }
         } catch (e: Exception) {
             Log.e(tag, "Exception storing user code in Supabase: ${e.message}")

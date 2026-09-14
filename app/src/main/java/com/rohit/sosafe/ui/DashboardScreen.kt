@@ -46,7 +46,7 @@ fun GridBackground(modifier: Modifier = Modifier) {
     Canvas(modifier = modifier.fillMaxSize()) {
         val gridSpacing = 20.dp.toPx()
         val dotRadius = 1.dp.toPx()
-        val color = LightGrey.copy(alpha = 0.15f)
+        val color = LightGrey.copy(alpha = 0.2f)
 
         for (x in 0..(size.width / gridSpacing).toInt()) {
             for (y in 0..(size.height / gridSpacing).toInt()) {
@@ -548,17 +548,38 @@ fun SenderDashboard(
         Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(modifier = Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
+            val netIcon = when {
+                !state.isNetworkConnected -> Icons.Default.WifiOff
+                state.networkType == "MOBILE DATA" -> Icons.Default.SignalCellular4Bar
+                else -> Icons.Default.Wifi
+            }
+            val (signalLabel, signalColor) = when {
+                !state.isNetworkConnected -> Pair("NO NETWORK", DangerRed)
+                state.networkQuality.contains("EXCELLENT") -> Pair("EXCELLENT", SuccessGreen)
+                else -> Pair("POOR", Color(0xFF2196F3)) // Blue for bad/poor
+            }
+
             StatusCard(
                 title = "NETWORK",
-                status = if (state.connectionStatus == "STABLE") "CONNECTED" else "OFFLINE",
-                icon = Icons.Default.Wifi,
+                status = if (state.isNetworkConnected) "CONNECTED" else "DISCONNECTED",
+                subtitle = "SIGNAL: $signalLabel",
+                icon = netIcon,
+                statusColor = signalColor,
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(16.dp))
+
+            val (broadcastIcon, broadcastLabel) = when (state.streamingMode) {
+                StreamingMode.WEBRTC_ONLY -> Pair(Icons.Default.GraphicEq, "WEBRTC MODE")
+                StreamingMode.CHUNK_ONLY -> Pair(Icons.Default.CloudUpload, "CHUNK MODE")
+                StreamingMode.HYBRID -> Pair(Icons.Default.Radio, "HYBRID MODE")
+            }
+
             StatusCard(
                 title = "BROADCAST",
                 status = if (state.isEmergency) "LIVE" else "READY",
-                icon = Icons.Default.Radio,
+                subtitle = broadcastLabel,
+                icon = broadcastIcon,
                 isLive = state.isEmergency,
                 modifier = Modifier.weight(1f)
             )
@@ -584,6 +605,46 @@ fun GuardianDashboard(
     onRemoveClick: (Contact) -> Unit
 ) {
     Column {
+        Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            val netIcon = when {
+                !state.isNetworkConnected -> Icons.Default.WifiOff
+                state.networkType == "MOBILE DATA" -> Icons.Default.SignalCellular4Bar
+                else -> Icons.Default.Wifi
+            }
+            val (signalLabel, signalColor) = when {
+                !state.isNetworkConnected -> Pair("NO NETWORK", DangerRed)
+                state.networkQuality.contains("EXCELLENT") -> Pair("EXCELLENT", SuccessGreen)
+                else -> Pair("POOR", Color(0xFF2196F3)) // Blue for bad/poor
+            }
+
+            StatusCard(
+                title = "NETWORK",
+                status = if (state.isNetworkConnected) "CONNECTED" else "DISCONNECTED",
+                subtitle = "SIGNAL: $signalLabel",
+                icon = netIcon,
+                statusColor = signalColor,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+
+            val (broadcastIcon, broadcastLabel) = when (state.streamingMode) {
+                StreamingMode.WEBRTC_ONLY -> Pair(Icons.Default.GraphicEq, "WEBRTC MODE")
+                StreamingMode.CHUNK_ONLY -> Pair(Icons.Default.CloudUpload, "CHUNK MODE")
+                StreamingMode.HYBRID -> Pair(Icons.Default.Radio, "HYBRID MODE")
+            }
+
+            StatusCard(
+                title = "LISTENER SERVICE",
+                status = "ACTIVE",
+                subtitle = broadcastLabel,
+                icon = broadcastIcon,
+                isLive = false,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(modifier = Modifier.height(32.dp))
         ContactsSection(
             title = "PROTECTED USERS (Tap name for history)", 
             contacts = state.contacts, 
@@ -673,27 +734,54 @@ fun UserCodeCard(userCode: String) {
 }
 
 @Composable
-fun StatusCard(title: String, status: String, icon: ImageVector, isLive: Boolean = false, modifier: Modifier = Modifier) {
+fun StatusCard(
+    title: String,
+    status: String,
+    icon: ImageVector,
+    subtitle: String? = null,
+    statusColor: Color? = null,
+    isLive: Boolean = false,
+    modifier: Modifier = Modifier
+) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
             .background(if (isLive) PureWhite else DarkCard)
-            .padding(20.dp)
+            .padding(16.dp)
     ) {
-        Icon(
-            imageVector = icon, 
-            contentDescription = null, 
-            tint = if (isLive) Black else TextSecondary, 
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Text(text = title, style = MaterialTheme.typography.labelSmall, color = if (isLive) Black.copy(alpha = 0.6f) else TextSecondary)
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon, 
+                contentDescription = null, 
+                tint = if (isLive) Black else (statusColor ?: TextSecondary), 
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = title, 
+                style = MaterialTheme.typography.labelSmall, 
+                color = if (isLive) Black.copy(alpha = 0.6f) else TextSecondary,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
         Text(
             text = status, 
             style = MaterialTheme.typography.titleMedium, 
-            color = if (isLive) Black else TextPrimary, 
+            color = if (isLive) Black else (statusColor ?: TextPrimary), 
             fontWeight = FontWeight.Bold
         )
+        if (subtitle != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isLive) Black.copy(alpha = 0.7f) else LightGrey,
+                fontSize = 10.sp
+            )
+        }
     }
 }
 

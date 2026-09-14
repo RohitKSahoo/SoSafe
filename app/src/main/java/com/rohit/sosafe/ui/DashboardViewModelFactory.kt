@@ -11,12 +11,13 @@ class DashboardViewModelFactory(
     private val userManager: UserManager,
     private val appModeManager: AppModeManager,
     private val streamingModeManager: StreamingModeManager,
-    private val recordingManager: RecordingManager
+    private val recordingManager: RecordingManager,
+    private val networkMonitor: com.rohit.sosafe.utils.NetworkMonitor
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(DashboardViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return DashboardViewModel(userManager, appModeManager, streamingModeManager, recordingManager) as T
+            return DashboardViewModel(userManager, appModeManager, streamingModeManager, recordingManager, networkMonitor) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

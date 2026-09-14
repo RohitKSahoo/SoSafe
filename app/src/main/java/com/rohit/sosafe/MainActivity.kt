@@ -75,8 +75,9 @@ class MainActivity : ComponentActivity() {
                         currentAppMode = selectedMode
                     }
                 } else {
-                    val viewModel: DashboardViewModel = viewModel(
-                        factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager, recordingManager)
+                    val networkMonitor = remember { com.rohit.sosafe.utils.NetworkMonitor(applicationContext) }
+                    val viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                        factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager, recordingManager, networkMonitor)
                     )
                     
                     MainScreen(

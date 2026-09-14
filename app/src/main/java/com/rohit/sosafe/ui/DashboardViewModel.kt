@@ -24,7 +24,8 @@ class DashboardViewModel(
     private val userManager: UserManager,
     private val appModeManager: AppModeManager,
     private val streamingModeManager: StreamingModeManager,
-    private val recordingManager: RecordingManager
+    private val recordingManager: RecordingManager,
+    private val networkMonitor: com.rohit.sosafe.utils.NetworkMonitor
 ) : ViewModel() {
 
     private val _dashboardState = MutableStateFlow(DashboardState())
@@ -39,9 +40,25 @@ class DashboardViewModel(
     private var sessionsRealtime: SupabaseRealtimeClient? = null
 
     init {
+        observeNetworkState()
         setupStateSync()
         loadInitialData()
         observeServiceState()
+    }
+
+    private fun observeNetworkState() {
+        viewModelScope.launch {
+            networkMonitor.networkStatusFlow.collect { status ->
+                _dashboardState.update { currentState ->
+                    currentState.copy(
+                        connectionStatus = if (status.isConnected) "CONNECTED" else "OFFLINE",
+                        isNetworkConnected = status.isConnected,
+                        networkQuality = status.voiceQualityStatus,
+                        networkType = status.connectionType
+                    )
+                }
+            }
+        }
     }
 
     private fun setupStateSync() {
@@ -318,26 +335,43 @@ class DashboardViewModel(
     }
 
     fun acceptPairingRequest(request: PairingRequest, customName: String = "") {
-        viewModelScope.launch {
-            userManager.acceptPairingRequest(request.requestId, request.fromUserId, customName)
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.acceptPairingRequest(request.requestId, request.fromUserId, customName)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchUserContacts(code)
+                fetchPairingRequests(code)
+            }
         }
     }
 
     fun declinePairingRequest(request: PairingRequest) {
-        viewModelScope.launch {
-            userManager.declinePairingRequest(request.requestId)
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.declinePairingRequest(request.requestId)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchPairingRequests(code)
+            }
         }
     }
 
     fun renameContact(contactId: String, newName: String) {
-        viewModelScope.launch {
-            userManager.updateContactName(contactId, newName)
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.updateContactName(contactId, newName)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchUserContacts(code)
+            }
         }
     }
 
     fun removeContact(targetCode: String) {
-        viewModelScope.launch {
-            userManager.removeContact(targetCode)
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.removeContact(targetCode)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchUserContacts(code)
+            }
         }
     }
 

@@ -24,7 +24,10 @@ data class DashboardState(
     val userCode: String = "--------",
     val isProtectionActive: Boolean = false,
     val isEmergency: Boolean = false,
-    val connectionStatus: String = "STABLE",
+    val connectionStatus: String = "CONNECTED",
+    val isNetworkConnected: Boolean = true,
+    val networkQuality: String = "EXCELLENT (VOICE OK)", // EXCELLENT (VOICE OK), POOR (AUDIO DELAY), NO INTERNET
+    val networkType: String = "WIFI", // WIFI, 4G, 5G, 3G, OFFLINE
     val broadcastStatus: String = "IDLE",
     val contacts: List<Contact> = emptyList(),
     val activeEmergencySession: SosSession? = null,
