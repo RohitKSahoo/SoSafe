@@ -2,20 +2,22 @@ package com.rohit.sosafe.data
 
 import android.content.Context
 import android.util.Log
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.ktx.Firebase
 import com.google.firebase.messaging.FirebaseMessaging
+import com.rohit.sosafe.data.contracts.PairingRequest
+import com.rohit.sosafe.data.contracts.RemovalNotification
 import com.rohit.sosafe.data.contracts.SoSafeContract
-import com.rohit.sosafe.data.contracts.User
+import com.rohit.sosafe.data.supabase.SupabaseApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 class UserManager(private val context: Context) {
 
     private val tag = "UserManager"
     private val userCodeKey = "user_code"
     private val prefsName = "sosafe_prefs"
-    private val db = Firebase.firestore
 
     fun hasPermission(permission: String): Boolean {
         return context.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -33,9 +35,9 @@ class UserManager(private val context: Context) {
         if (userCode == null) {
             userCode = generateUniqueUserCode()
             sharedPrefs.edit().putString(userCodeKey, userCode).apply()
-            storeUserCodeInFirestore(userCode)
+            storeUserCodeInSupabase(userCode)
         } else {
-            // Even if user exists, refresh the FCM token in Firestore
+            storeUserCodeInSupabase(userCode)
             updateFcmToken(userCode)
         }
         return userCode
@@ -47,89 +49,221 @@ class UserManager(private val context: Context) {
         return (1..length).map { allowedChars.random() }.joinToString("")
     }
 
-    private suspend fun storeUserCodeInFirestore(userCode: String) {
-        val fcmToken = try {
-            FirebaseMessaging.getInstance().token.await()
-        } catch (e: Exception) {
-            ""
-        }
-
-        val user = User(
-            userId = userCode,
-            contacts = emptyList(),
-            contactNames = emptyMap(),
-            fcmToken = fcmToken,
-            createdAt = System.currentTimeMillis()
-        )
+    private suspend fun storeUserCodeInSupabase(userCode: String) = withContext(Dispatchers.IO) {
         try {
-            db.collection(SoSafeContract.Collections.USERS)
-                .document(userCode)
-                .set(user)
-                .await()
-            Log.d(tag, "User code '$userCode' stored in Firestore.")
+            val fcmToken = try {
+                FirebaseMessaging.getInstance().token.await()
+            } catch (e: Exception) {
+                ""
+            }
+
+            // Check if user record already exists
+            val existing = SupabaseApi.select("users", "user_id=eq.$userCode")
+            if (existing.length() > 0) {
+                // User already exists, only update FCM token to preserve contacts and contact_names
+                updateFcmToken(userCode)
+            } else {
+                // New user initialization
+                val json = JSONObject().apply {
+                    put("user_id", userCode)
+                    put("contacts", JSONArray())
+                    put("contact_names", JSONObject())
+                    put("fcm_token", fcmToken)
+                    put("created_at", System.currentTimeMillis())
+                }
+
+                val success = SupabaseApi.upsert("users", json, onConflict = "user_id")
+                if (success) {
+                    Log.d(tag, "User code '$userCode' stored in Supabase.")
+                } else {
+                    Log.e(tag, "Error storing user code in Supabase.")
+                }
+            }
         } catch (e: Exception) {
-            Log.e(tag, "Error storing user code: ${e.message}")
+            Log.e(tag, "Exception storing user code in Supabase: ${e.message}")
         }
     }
 
-    suspend fun updateFcmToken(userCode: String) {
+    suspend fun updateFcmToken(userCode: String) = withContext(Dispatchers.IO) {
         try {
             val token = FirebaseMessaging.getInstance().token.await()
-            db.collection(SoSafeContract.Collections.USERS)
-                .document(userCode)
-                .update(SoSafeContract.Fields.FCM_TOKEN, token)
-                .await()
-            Log.d(tag, "FCM Token updated successfully")
+            val json = JSONObject().apply {
+                put("fcm_token", token)
+            }
+            SupabaseApi.update("users", "user_id=eq.$userCode", json)
+            Log.d(tag, "FCM Token updated successfully in Supabase")
         } catch (e: Exception) {
             Log.e(tag, "Failed to update FCM token: ${e.message}")
         }
     }
 
     /**
-     * SYMMETRIC LINKING: Ensures both users are added to each other's contact list atomically.
+     * Validates if a target user code exists in Supabase and is not self.
      */
-    suspend fun addContact(inputCode: String, isGuardianMode: Boolean): Result<Unit> {
-        val myCode = getUserCode() // Ensure user exists in Firestore
-        val contactCode = inputCode.replace("-", "").trim().uppercase()
+    suspend fun validateUserCode(inputCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val myCode = getUserCode()
+        val formattedCode = inputCode.replace("-", "").trim().uppercase()
 
-        if (myCode == contactCode) return Result.failure(Exception("Cannot link to self"))
+        if (formattedCode.length != 8) {
+            return@withContext Result.failure(Exception("Code must be 8 characters long"))
+        }
 
-        return try {
-            val contactDoc = db.collection(SoSafeContract.Collections.USERS)
-                .document(contactCode)
-                .get()
-                .await()
-                
-            if (!contactDoc.exists()) {
-                return Result.failure(Exception("Invalid Contact Code"))
+        if (myCode == formattedCode) {
+            return@withContext Result.failure(Exception("Cannot link to your own device ID"))
+        }
+
+        try {
+            val rows = SupabaseApi.select("users", "user_id=eq.$formattedCode")
+            if (rows.length() == 0) {
+                Result.failure(Exception("No such code exists"))
+            } else {
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error validating user code: ${e.message}")
+            Result.failure(Exception("Failed to verify code: ${e.message}"))
+        }
+    }
+
+    /**
+     * Sends a 2-Step Pairing Request to a recipient device.
+     */
+    suspend fun sendPairingRequest(inputCode: String, customName: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val myCode = getUserCode()
+        val targetCode = inputCode.replace("-", "").trim().uppercase()
+
+        val validation = validateUserCode(targetCode)
+        if (validation.isFailure) return@withContext validation
+
+        try {
+            // Check if already in contacts list
+            val rows = SupabaseApi.select("users", "user_id=eq.$myCode")
+            if (rows.length() > 0) {
+                val userObj = rows.getJSONObject(0)
+                val contactsArr = userObj.optJSONArray("contacts") ?: JSONArray()
+                for (i in 0 until contactsArr.length()) {
+                    if (contactsArr.getString(i) == targetCode) {
+                        return@withContext Result.failure(Exception("Already linked to this user"))
+                    }
+                }
             }
 
-            val batch = db.batch()
-            
-            val myRef = db.collection(SoSafeContract.Collections.USERS).document(myCode)
-            val contactRef = db.collection(SoSafeContract.Collections.USERS).document(contactCode)
+            // Save target custom name locally on sender device
+            updateContactName(targetCode, customName)
 
-            // Add each other to contacts
-            batch.update(myRef, SoSafeContract.Fields.CONTACTS, FieldValue.arrayUnion(contactCode))
-            batch.update(contactRef, SoSafeContract.Fields.CONTACTS, FieldValue.arrayUnion(myCode))
-            
-            batch.commit().await()
-            Log.d(tag, "Symmetric link established between $myCode and $contactCode")
-                
-            Result.success(Unit)
+            val requestId = "${myCode}_${targetCode}"
+            val json = JSONObject().apply {
+                put("request_id", requestId)
+                put("from_user_id", myCode)
+                put("from_user_name", customName.ifBlank { "User $myCode" })
+                put("to_user_id", targetCode)
+                put("status", SoSafeContract.Status.PENDING)
+                put("created_at", System.currentTimeMillis())
+            }
+
+            val ok = SupabaseApi.upsert("pairing_requests", json, onConflict = "request_id")
+            if (ok) {
+                Log.d(tag, "Pairing request sent from $myCode to $targetCode")
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception("Failed to send pairing request"))
+            }
         } catch (e: Exception) {
-            Log.e(tag, "Error adding contact: ${e.message}")
+            Log.e(tag, "Error sending pairing request: ${e.message}")
             Result.failure(e)
         }
     }
 
-    suspend fun updateContactName(contactId: String, name: String): Result<Unit> {
-        val myCode = getUserCodeSync() ?: return Result.failure(Exception("Not logged in"))
-        return try {
-            db.collection(SoSafeContract.Collections.USERS)
-                .document(myCode)
-                .update("${SoSafeContract.Fields.CONTACT_NAMES}.$contactId", name)
-                .await()
+    /**
+     * Accepts a pending pairing request and establishes symmetric link.
+     */
+    suspend fun acceptPairingRequest(requestId: String, fromUserId: String, customNameForFromUser: String = ""): Result<Unit> = withContext(Dispatchers.IO) {
+        val myCode = getUserCode()
+        try {
+            if (customNameForFromUser.isNotBlank()) {
+                updateContactName(fromUserId, customNameForFromUser)
+            }
+
+            // 1. Add fromUserId to my contacts
+            addContactToUserList(myCode, fromUserId)
+            // 2. Add myCode to fromUserId contacts
+            addContactToUserList(fromUserId, myCode)
+
+            // 3. Mark request status as ACCEPTED
+            val statusJson = JSONObject().apply { put("status", SoSafeContract.Status.ACCEPTED) }
+            SupabaseApi.update("pairing_requests", "request_id=eq.$requestId", statusJson)
+
+            Log.d(tag, "Pairing request accepted between $myCode and $fromUserId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(tag, "Error accepting pairing request: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Declines a pending pairing request.
+     */
+    suspend fun declinePairingRequest(requestId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val statusJson = JSONObject().apply { put("status", SoSafeContract.Status.REJECTED) }
+            SupabaseApi.update("pairing_requests", "request_id=eq.$requestId", statusJson)
+            Log.d(tag, "Pairing request declined: $requestId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(tag, "Error declining pairing request: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    private fun addContactToUserList(userId: String, contactCode: String) {
+        val rows = SupabaseApi.select("users", "user_id=eq.$userId")
+        if (rows.length() > 0) {
+            val userObj = rows.getJSONObject(0)
+            val contactsArr = userObj.optJSONArray("contacts") ?: JSONArray()
+            var exists = false
+            val newArr = JSONArray()
+            for (i in 0 until contactsArr.length()) {
+                val c = contactsArr.getString(i)
+                newArr.put(c)
+                if (c == contactCode) exists = true
+            }
+            if (!exists) newArr.put(contactCode)
+
+            val updateObj = JSONObject().apply { put("contacts", newArr) }
+            SupabaseApi.update("users", "user_id=eq.$userId", updateObj)
+        }
+    }
+
+    private fun removeContactFromUserList(userId: String, contactCode: String) {
+        val rows = SupabaseApi.select("users", "user_id=eq.$userId")
+        if (rows.length() > 0) {
+            val userObj = rows.getJSONObject(0)
+            val contactsArr = userObj.optJSONArray("contacts") ?: JSONArray()
+            val newArr = JSONArray()
+            for (i in 0 until contactsArr.length()) {
+                val c = contactsArr.getString(i)
+                if (c != contactCode) {
+                    newArr.put(c)
+                }
+            }
+            val updateObj = JSONObject().apply { put("contacts", newArr) }
+            SupabaseApi.update("users", "user_id=eq.$userId", updateObj)
+        }
+    }
+
+    suspend fun updateContactName(contactId: String, name: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val myCode = getUserCodeSync() ?: return@withContext Result.failure(Exception("Not logged in"))
+        try {
+            val rows = SupabaseApi.select("users", "user_id=eq.$myCode")
+            if (rows.length() > 0) {
+                val userObj = rows.getJSONObject(0)
+                val namesObj = userObj.optJSONObject("contact_names") ?: JSONObject()
+                namesObj.put(contactId, name)
+
+                val updateObj = JSONObject().apply { put("contact_names", namesObj) }
+                SupabaseApi.update("users", "user_id=eq.$myCode", updateObj)
+            }
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(tag, "Error updating contact name: ${e.message}")
@@ -137,15 +271,82 @@ class UserManager(private val context: Context) {
         }
     }
 
-    suspend fun getContacts(): List<String> {
-        val myCode = getUserCodeSync() ?: return emptyList()
-        return try {
-            val doc = db.collection(SoSafeContract.Collections.USERS)
-                .document(myCode)
-                .get()
-                .await()
-            @Suppress("UNCHECKED_CAST")
-            (doc.get(SoSafeContract.Fields.CONTACTS) as? List<String>) ?: emptyList()
+    /**
+     * Removes contact symmetrically for both users and creates a removal notification for the target user.
+     */
+    suspend fun removeContact(targetCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val myCode = getUserCode()
+        val formattedTargetCode = targetCode.replace("-", "").trim().uppercase()
+
+        try {
+            // Retrieve custom name that I gave to target or fallback to myCode
+            var nameGivenToMe = "User $myCode"
+            val targetUserRows = SupabaseApi.select("users", "user_id=eq.$formattedTargetCode")
+            if (targetUserRows.length() > 0) {
+                val targetNamesObj = targetUserRows.getJSONObject(0).optJSONObject("contact_names") ?: JSONObject()
+                if (targetNamesObj.has(myCode)) {
+                    nameGivenToMe = targetNamesObj.getString(myCode)
+                }
+            }
+
+            val myRows = SupabaseApi.select("users", "user_id=eq.$myCode")
+            if (myRows.length() > 0) {
+                val myNamesObj = myRows.getJSONObject(0).optJSONObject("contact_names") ?: JSONObject()
+                if (myNamesObj.has(myCode) && myNamesObj.getString(myCode).isNotBlank()) {
+                    nameGivenToMe = myNamesObj.getString(myCode)
+                }
+            }
+
+            // 1. Remove target from my contacts
+            removeContactFromUserList(myCode, formattedTargetCode)
+            // 2. Remove me from target contacts
+            removeContactFromUserList(formattedTargetCode, myCode)
+
+            // 3. Create removal notification document
+            val notifId = "${myCode}_${formattedTargetCode}_${System.currentTimeMillis()}"
+            val notifJson = JSONObject().apply {
+                put("notification_id", notifId)
+                put("remover_id", myCode)
+                put("remover_name", nameGivenToMe)
+                put("target_user_id", formattedTargetCode)
+                put("created_at", System.currentTimeMillis())
+            }
+            SupabaseApi.upsert("removal_notifications", notifJson, onConflict = "notification_id")
+
+            Log.d(tag, "Contact $formattedTargetCode removed by $myCode (Notified as: $nameGivenToMe)")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(tag, "Error removing contact: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Dismisses/deletes a removal notification once viewed.
+     */
+    suspend fun dismissRemovalNotification(notificationId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            SupabaseApi.delete("removal_notifications", "notification_id=eq.$notificationId")
+            Log.d(tag, "Removal notification dismissed: $notificationId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(tag, "Error dismissing removal notification: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getContacts(): List<String> = withContext(Dispatchers.IO) {
+        val myCode = getUserCodeSync() ?: return@withContext emptyList()
+        try {
+            val rows = SupabaseApi.select("users", "user_id=eq.$myCode")
+            if (rows.length() > 0) {
+                val contactsArr = rows.getJSONObject(0).optJSONArray("contacts") ?: JSONArray()
+                val list = mutableListOf<String>()
+                for (i in 0 until contactsArr.length()) {
+                    list.add(contactsArr.getString(i))
+                }
+                list
+            } else emptyList()
         } catch (e: Exception) {
             emptyList()
         }

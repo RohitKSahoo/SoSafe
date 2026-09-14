@@ -1,25 +1,28 @@
 package com.rohit.sosafe.architecture
 
 import android.util.Log
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
 import com.rohit.sosafe.data.contracts.SoSafeContract
+import com.rohit.sosafe.data.supabase.SupabaseApi
+import com.rohit.sosafe.data.supabase.SupabaseRealtimeClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
- * Single source of truth for SOS Session Lifecycle.
+ * Single source of truth for SOS Session Lifecycle (Supabase Edition).
  */
 class SessionController(
-    private val db: FirebaseFirestore,
     private val sessionId: String
 ) {
     private val TAG = "SessionController"
     private val _sessionState = MutableStateFlow<SessionState>(SessionState.IDLE)
     val sessionState: StateFlow<SessionState> = _sessionState.asStateFlow()
 
-    private var sessionListener: ListenerRegistration? = null
+    private var realtimeClient: SupabaseRealtimeClient? = null
+    private val scope = CoroutineScope(Dispatchers.IO)
 
     fun startMonitoring() {
         if (_sessionState.value !is SessionState.IDLE) return
@@ -27,21 +30,26 @@ class SessionController(
         _sessionState.value = SessionState.CONNECTING
         Log.d(TAG, "Monitoring started for: $sessionId")
 
-        sessionListener = db.collection(SoSafeContract.Collections.SESSIONS)
-            .document(sessionId)
-            .addSnapshotListener { snapshot, e ->
-                if (e != null) {
-                    _sessionState.value = SessionState.ERROR(e.message ?: "Unknown error")
-                    return@addSnapshotListener
-                }
-
-                if (snapshot != null && snapshot.exists()) {
-                    val status = snapshot.getString(SoSafeContract.Fields.STATUS)
+        // Initial fetch
+        scope.launch {
+            try {
+                val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
+                if (rows.length() > 0) {
+                    val status = rows.getJSONObject(0).optString("status")
                     handleRemoteUpdate(status)
                 } else {
                     _sessionState.value = SessionState.ENDED
                 }
+            } catch (e: Exception) {
+                _sessionState.value = SessionState.ERROR(e.message ?: "Unknown error")
             }
+        }
+
+        // Realtime subscription
+        realtimeClient = SupabaseRealtimeClient("sessions", "session_id", sessionId) { type, record ->
+            val status = record.optString("status")
+            handleRemoteUpdate(status)
+        }.apply { start() }
     }
 
     private fun handleRemoteUpdate(status: String?) {
@@ -56,7 +64,6 @@ class SessionController(
                 if (_sessionState.value is SessionState.ACTIVE || _sessionState.value is SessionState.CONNECTING) {
                     _sessionState.value = SessionState.TERMINATING
                     Log.d(TAG, "Session marked TERMINATING")
-                    // Perform any internal cleanup if needed, then move to ENDED
                     _sessionState.value = SessionState.ENDED
                 }
             }
@@ -64,8 +71,8 @@ class SessionController(
     }
 
     fun stopMonitoring() {
-        sessionListener?.remove()
-        sessionListener = null
+        realtimeClient?.stop()
+        realtimeClient = null
         _sessionState.value = SessionState.ENDED
         Log.d(TAG, "Monitoring stopped manually")
     }

@@ -50,13 +50,12 @@ class MainActivity : ComponentActivity() {
         recordingManager = RecordingManager(applicationContext)
         sosTriggerManager = SOSTriggerManager(this)
         
-        // Initialize RoleManager
         val currentMode = appModeManager.getAppMode()
-        if (currentMode != null) {
-            RoleManager.role = currentMode.name
-            lifecycleScope.launch {
-                val myId = userManager.getUserCodeSync() ?: userManager.getUserCode()
-                RoleManager.myUserId = myId
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val myId = userManager.getUserCode()
+            RoleManager.myUserId = myId
+            if (currentMode != null) {
+                RoleManager.role = currentMode.name
                 val contacts = userManager.getContacts()
                 if (contacts.isNotEmpty()) {
                     RoleManager.pairedUserId = contacts.first()
@@ -76,8 +75,9 @@ class MainActivity : ComponentActivity() {
                         currentAppMode = selectedMode
                     }
                 } else {
-                    val viewModel: DashboardViewModel = viewModel(
-                        factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager, recordingManager)
+                    val networkMonitor = remember { com.rohit.sosafe.utils.NetworkMonitor(applicationContext) }
+                    val viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                        factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager, recordingManager, networkMonitor)
                     )
                     
                     MainScreen(
@@ -179,12 +179,17 @@ fun MainScreen(
     )
 
     if (showAddContactDialog) {
+        val context = androidx.compose.ui.platform.LocalContext.current
         AddContactDialog(
             onDismiss = { showAddContactDialog = false },
-            onAdd = { code, name ->
-                viewModel.addContact(code) { result ->
+            onValidateCode = { code, onResult ->
+                viewModel.validateUserCode(code, onResult)
+            },
+            onAdd = { code, name, onResult ->
+                viewModel.sendPairingRequest(code, name) { result ->
+                    onResult(result)
                     if (result.isSuccess) {
-                        viewModel.renameContact(code, name)
+                        android.widget.Toast.makeText(context, "Pairing request sent to $code", android.widget.Toast.LENGTH_LONG).show()
                         showAddContactDialog = false
                     }
                 }

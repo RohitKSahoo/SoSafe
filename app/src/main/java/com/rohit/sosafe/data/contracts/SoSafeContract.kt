@@ -13,6 +13,8 @@ object SoSafeContract {
         const val USERS = "users"
         const val SESSIONS = "sessions"
         const val AUDIO_CHUNKS = "audio_chunks"
+        const val PAIRING_REQUESTS = "pairing_requests"
+        const val REMOVAL_NOTIFICATIONS = "removal_notifications"
     }
 
     object Fields {
@@ -22,6 +24,12 @@ object SoSafeContract {
         const val CONTACT_NAMES = "contactNames" // New field for mapping ID -> Custom Name
         const val FCM_TOKEN = "fcmToken"
         const val CREATED_AT = "createdAt"
+        
+        // Pairing Request fields
+        const val REQUEST_ID = "requestId"
+        const val FROM_USER_ID = "fromUserId"
+        const val FROM_USER_NAME = "fromUserName"
+        const val TO_USER_ID = "toUserId"
         
         // Session fields
         const val SESSION_ID = "sessionId"
@@ -47,6 +55,9 @@ object SoSafeContract {
     object Status {
         const val ACTIVE = "ACTIVE"
         const val ENDED = "ENDED"
+        const val PENDING = "PENDING"
+        const val ACCEPTED = "ACCEPTED"
+        const val REJECTED = "REJECTED"
     }
 
     // --- Dynamic Path Helpers ---
@@ -70,6 +81,23 @@ data class User(
     val contacts: List<String> = emptyList(),
     val contactNames: Map<String, String> = emptyMap(), // Mapping ID -> Custom Name
     val fcmToken: String = "",
+    val createdAt: Long = 0L
+)
+
+data class PairingRequest(
+    val requestId: String = "",
+    val fromUserId: String = "",
+    val fromUserName: String = "",
+    val toUserId: String = "",
+    val status: String = SoSafeContract.Status.PENDING,
+    val createdAt: Long = 0L
+)
+
+data class RemovalNotification(
+    val notificationId: String = "",
+    val removerId: String = "",
+    val removerName: String = "",
+    val targetUserId: String = "",
     val createdAt: Long = 0L
 )
 

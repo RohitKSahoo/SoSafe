@@ -3,72 +3,64 @@ package com.rohit.sosafe.ui
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.ktx.Firebase
+import com.rohit.sosafe.architecture.AudioPlaybackController
+import com.rohit.sosafe.architecture.SessionController
+import com.rohit.sosafe.architecture.SessionState
 import com.rohit.sosafe.data.*
-import com.rohit.sosafe.data.contracts.SosSession
-import com.rohit.sosafe.data.contracts.SoSafeContract
+import com.rohit.sosafe.data.contracts.*
+import com.rohit.sosafe.data.supabase.SupabaseApi
+import com.rohit.sosafe.data.supabase.SupabaseRealtimeClient
 import com.rohit.sosafe.utils.RecordingInfo
 import com.rohit.sosafe.utils.RecordingManager
+import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.utils.ServiceState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-
-data class Contact(
-    val id: String,
-    val name: String,
-    val status: ContactStatus,
-    val lastActive: String,
-    val activeSession: SosSession? = null
-)
-
-enum class ContactStatus {
-    ONLINE, OFFLINE, PENDING, EMERGENCY
-}
-
-data class DashboardState(
-    val userCode: String = "--- ---",
-    val isProtectionActive: Boolean = false,
-    val connectionStatus: String = "STABLE",
-    val broadcastStatus: String = "IDLE",
-    val contacts: List<Contact> = emptyList(),
-    val isEmergency: Boolean = false,
-    val activeEmergencySession: SosSession? = null,
-    val dismissedSessions: Set<String> = emptySet(),
-    val streamingMode: StreamingMode = StreamingMode.HYBRID,
-    val selectedUserRecordings: List<RecordingInfo> = emptyList(),
-    val selectedPlaybackRecording: RecordingInfo? = null
-)
+import org.json.JSONArray
+import org.json.JSONObject
 
 class DashboardViewModel(
     private val userManager: UserManager,
     private val appModeManager: AppModeManager,
     private val streamingModeManager: StreamingModeManager,
-    private val recordingManager: RecordingManager
+    private val recordingManager: RecordingManager,
+    private val networkMonitor: com.rohit.sosafe.utils.NetworkMonitor
 ) : ViewModel() {
 
     private val _dashboardState = MutableStateFlow(DashboardState())
     val state: StateFlow<DashboardState> = _dashboardState.asStateFlow()
     
-    // Internal state flows to avoid race conditions
     private val _rawContacts = MutableStateFlow<List<Contact>>(emptyList())
     private val _activeSessions = MutableStateFlow<List<SosSession>>(emptyList())
     
-    private val db = Firebase.firestore
-    private var sessionListenerJob: ListenerRegistration? = null
-    private var userListenerJob: ListenerRegistration? = null
+    private var userRealtime: SupabaseRealtimeClient? = null
+    private var pairingRealtime: SupabaseRealtimeClient? = null
+    private var removalRealtime: SupabaseRealtimeClient? = null
+    private var sessionsRealtime: SupabaseRealtimeClient? = null
 
     init {
+        observeNetworkState()
         setupStateSync()
         loadInitialData()
         observeServiceState()
     }
 
-    /**
-     * REACTIVE SYNC: Combines raw contacts and active sessions into the final UI state.
-     * This prevents the "status stayed like that" bug by ensuring updates are atomic.
-     */
+    private fun observeNetworkState() {
+        viewModelScope.launch {
+            networkMonitor.networkStatusFlow.collect { status ->
+                _dashboardState.update { currentState ->
+                    currentState.copy(
+                        connectionStatus = if (status.isConnected) "CONNECTED" else "OFFLINE",
+                        isNetworkConnected = status.isConnected,
+                        networkQuality = status.voiceQualityStatus,
+                        networkType = status.connectionType
+                    )
+                }
+            }
+        }
+    }
+
     private fun setupStateSync() {
         viewModelScope.launch {
             combine(_rawContacts, _activeSessions, _dashboardState.map { it.dismissedSessions }.distinctUntilChanged()) { contacts, sessions, dismissed ->
@@ -107,6 +99,8 @@ class DashboardViewModel(
             ) }
             
             observeUserContacts(code)
+            observePairingRequests(code)
+            observeRemovalNotifications(code)
         }
     }
 
@@ -116,37 +110,138 @@ class DashboardViewModel(
     }
 
     private fun observeUserContacts(userCode: String) {
-        userListenerJob?.remove()
-        userListenerJob = db.collection(SoSafeContract.Collections.USERS)
-            .document(userCode)
-            .addSnapshotListener { snapshot, e ->
-                if (e != null) {
-                    Log.e("SOS_AUDIT", "USER_LISTENER_ERROR: ${e.message}")
-                    return@addSnapshotListener
+        userRealtime?.stop()
+        
+        // Initial fetch
+        viewModelScope.launch(Dispatchers.IO) {
+            fetchUserContacts(userCode)
+        }
+
+        userRealtime = SupabaseRealtimeClient("users", "user_id", userCode) { type, record ->
+            viewModelScope.launch(Dispatchers.IO) {
+                fetchUserContacts(userCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun fetchUserContacts(userCode: String) {
+        try {
+            val rows = SupabaseApi.select("users", "user_id=eq.$userCode")
+            if (rows.length() > 0) {
+                val userObj = rows.getJSONObject(0)
+                val contactCodesArr = userObj.optJSONArray("contacts") ?: JSONArray()
+                val contactNamesObj = userObj.optJSONObject("contact_names") ?: JSONObject()
+
+                val contactCodes = mutableListOf<String>()
+                val contactNames = mutableMapOf<String, String>()
+
+                for (i in 0 until contactCodesArr.length()) {
+                    contactCodes.add(contactCodesArr.getString(i))
                 }
 
-                if (snapshot != null && snapshot.exists()) {
-                    @Suppress("UNCHECKED_CAST")
-                    val contactCodes = snapshot.get(SoSafeContract.Fields.CONTACTS) as? List<String> ?: emptyList()
-                    @Suppress("UNCHECKED_CAST")
-                    val contactNames = snapshot.get(SoSafeContract.Fields.CONTACT_NAMES) as? Map<String, String> ?: emptyMap()
-                    
-                    val contacts = contactCodes.map { contactCode ->
-                        Contact(
-                            id = contactCode,
-                            name = contactNames[contactCode] ?: "USER_${contactCode.take(4).uppercase()}",
-                            status = ContactStatus.ONLINE,
-                            lastActive = "RECENT"
-                        )
-                    }
-                    
-                    _rawContacts.value = contacts
-                    
-                    if (RoleManager.isGuardian()) {
-                        startSessionDiscovery(contactCodes)
-                    }
+                val keys = contactNamesObj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    contactNames[k] = contactNamesObj.getString(k)
+                }
+
+                val contacts = contactCodes.map { contactCode ->
+                    Contact(
+                        id = contactCode,
+                        name = contactNames[contactCode] ?: "USER_${contactCode.take(4).uppercase()}",
+                        status = ContactStatus.ONLINE,
+                        lastActive = "RECENT"
+                    )
+                }
+
+                _rawContacts.value = contacts
+
+                if (RoleManager.isGuardian()) {
+                    startSessionDiscovery(contactCodes)
                 }
             }
+        } catch (e: Exception) {
+            Log.e("SOS_AUDIT", "Error fetching user contacts: ${e.message}")
+        }
+    }
+
+    private fun observePairingRequests(userCode: String) {
+        pairingRealtime?.stop()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                fetchPairingRequests(userCode)
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+
+        pairingRealtime = SupabaseRealtimeClient("pairing_requests", "to_user_id", userCode) { type, record ->
+            viewModelScope.launch(Dispatchers.IO) {
+                fetchPairingRequests(userCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun fetchPairingRequests(userCode: String) {
+        try {
+            val rows = SupabaseApi.select("pairing_requests", "to_user_id=eq.$userCode&status=eq.PENDING")
+            val list = mutableListOf<PairingRequest>()
+            for (i in 0 until rows.length()) {
+                val obj = rows.getJSONObject(i)
+                list.add(
+                    PairingRequest(
+                        requestId = obj.optString("request_id"),
+                        fromUserId = obj.optString("from_user_id"),
+                        fromUserName = obj.optString("from_user_name"),
+                        toUserId = obj.optString("to_user_id"),
+                        status = obj.optString("status"),
+                        createdAt = obj.optLong("created_at")
+                    )
+                )
+            }
+            _dashboardState.update { it.copy(pendingPairingRequests = list) }
+        } catch (e: Exception) {
+            Log.e("SOS_AUDIT", "Error fetching pairing requests: ${e.message}")
+        }
+    }
+
+    private fun observeRemovalNotifications(userCode: String) {
+        removalRealtime?.stop()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                fetchRemovalNotifications(userCode)
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+
+        removalRealtime = SupabaseRealtimeClient("removal_notifications", "target_user_id", userCode) { type, record ->
+            viewModelScope.launch(Dispatchers.IO) {
+                fetchRemovalNotifications(userCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun fetchRemovalNotifications(userCode: String) {
+        try {
+            val rows = SupabaseApi.select("removal_notifications", "target_user_id=eq.$userCode")
+            val list = mutableListOf<RemovalNotification>()
+            for (i in 0 until rows.length()) {
+                val obj = rows.getJSONObject(i)
+                list.add(
+                    RemovalNotification(
+                        notificationId = obj.optString("notification_id"),
+                        removerId = obj.optString("remover_id"),
+                        removerName = obj.optString("remover_name"),
+                        targetUserId = obj.optString("target_user_id"),
+                        createdAt = obj.optLong("created_at")
+                    )
+                )
+            }
+            _dashboardState.update { currentState: DashboardState -> currentState.copy(pendingRemovalNotifications = list) }
+        } catch (e: Exception) {
+            Log.e("SOS_AUDIT", "Error fetching removal notifications: ${e.message}")
+        }
     }
 
     private fun observeServiceState() {
@@ -157,7 +252,7 @@ class DashboardViewModel(
             ) { isGuardian, isEmergency ->
                 Pair(isGuardian, isEmergency)
             }.collect { (isGuardian, isEmergency) ->
-                _dashboardState.update { it.copy(
+                _dashboardState.update { currentState: DashboardState -> currentState.copy(
                     isProtectionActive = isGuardian,
                     isEmergency = isEmergency,
                     broadcastStatus = if (isEmergency) "LIVE_FEED" else "IDLE"
@@ -169,61 +264,170 @@ class DashboardViewModel(
     private fun startSessionDiscovery(contactIds: List<String>) {
         if (contactIds.isEmpty()) {
             _activeSessions.value = emptyList()
-            sessionListenerJob?.remove()
+            sessionsRealtime?.stop()
             return
         }
 
-        Log.d("SOS_AUDIT", "GUARDIAN_DISCOVERY_START: Monitoring ${contactIds.size} contacts")
-        
-        sessionListenerJob?.remove()
-        sessionListenerJob = db.collection(SoSafeContract.Collections.SESSIONS)
-            .whereIn(SoSafeContract.Fields.SENDER_ID, contactIds)
-            .addSnapshotListener { snapshot, e ->
-                if (e != null) {
-                    Log.e("SOS_AUDIT", "LISTENER_ERROR: ${e.message}")
-                    return@addSnapshotListener
-                }
+        sessionsRealtime?.stop()
 
-                if (snapshot != null) {
-                    val sessions = snapshot.documents.mapNotNull { it.toObject(SosSession::class.java) }
-                        .filter { it.status == SoSafeContract.Status.ACTIVE }
-                    _activeSessions.value = sessions
-                    Log.d("SOS_AUDIT", "SESSION_DISCOVERY_UPDATE: Found ${sessions.size} active sessions")
-                }
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                fetchActiveSessions(contactIds)
+                kotlinx.coroutines.delay(2000)
             }
+        }
+
+        sessionsRealtime = SupabaseRealtimeClient("sessions") { type, record ->
+            viewModelScope.launch(Dispatchers.IO) {
+                fetchActiveSessions(contactIds)
+            }
+        }.apply { start() }
     }
 
-    fun addContact(code: String, onResult: (Result<Unit>) -> Unit) {
+    private fun fetchActiveSessions(contactIds: List<String>) {
+        try {
+            val rows = SupabaseApi.select("sessions", "status=eq.ACTIVE")
+            val list = mutableListOf<SosSession>()
+            for (i in 0 until rows.length()) {
+                val obj = rows.getJSONObject(i)
+                val senderId = obj.optString("sender_id")
+                if (senderId in contactIds) {
+                    val lat = obj.optDouble("last_latitude", Double.NaN)
+                    val lng = obj.optDouble("last_longitude", Double.NaN)
+                    val geoPoint = if (!lat.isNaN() && !lng.isNaN()) {
+                        com.google.firebase.firestore.GeoPoint(lat, lng)
+                    } else null
+
+                    list.add(
+                        SosSession(
+                            sessionId = obj.optString("session_id"),
+                            senderId = senderId,
+                            guardianId = obj.optString("guardian_id"),
+                            status = obj.optString("status"),
+                            startedAt = obj.optLong("started_at"),
+                            lastLocation = geoPoint,
+                            lastUpdatedAt = obj.optLong("last_updated_at"),
+                            streamingMode = obj.optString("streaming_mode", "HYBRID"),
+                            webrtcOffer = obj.optString("webrtc_offer"),
+                            webrtcAnswer = obj.optString("webrtc_answer")
+                        )
+                    )
+                }
+            }
+            _activeSessions.value = list
+        } catch (e: Exception) {
+            Log.e("SOS_AUDIT", "Error fetching active sessions: ${e.message}")
+        }
+    }
+
+    fun validateUserCode(code: String, onResult: (Result<Unit>) -> Unit) {
         viewModelScope.launch {
-            val result = userManager.addContact(code, RoleManager.isGuardian())
+            val result = userManager.validateUserCode(code)
             onResult(result)
         }
     }
 
-    fun renameContact(id: String, newName: String) {
+    fun sendPairingRequest(code: String, customName: String, onResult: (Result<Unit>) -> Unit) {
         viewModelScope.launch {
-            userManager.updateContactName(id, newName)
+            val result = userManager.sendPairingRequest(code, customName)
+            onResult(result)
         }
     }
-    
+
+    fun acceptPairingRequest(request: PairingRequest, customName: String = "") {
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.acceptPairingRequest(request.requestId, request.fromUserId, customName)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchUserContacts(code)
+                fetchPairingRequests(code)
+            }
+        }
+    }
+
+    fun declinePairingRequest(request: PairingRequest) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.declinePairingRequest(request.requestId)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchPairingRequests(code)
+            }
+        }
+    }
+
+    fun renameContact(contactId: String, newName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.updateContactName(contactId, newName)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchUserContacts(code)
+            }
+        }
+    }
+
+    fun removeContact(targetCode: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.removeContact(targetCode)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchUserContacts(code)
+            }
+        }
+    }
+
+    fun dismissRemovalNotification(notification: RemovalNotification) {
+        viewModelScope.launch {
+            userManager.dismissRemovalNotification(notification.notificationId)
+            _dashboardState.update { currentState: DashboardState ->
+                currentState.copy(pendingRemovalNotifications = currentState.pendingRemovalNotifications.filter { it.notificationId != notification.notificationId })
+            }
+        }
+    }
+
     fun dismissSession(sessionId: String) {
-        _dashboardState.update { it.copy(
-            dismissedSessions = it.dismissedSessions + sessionId
-        ) }
+        _dashboardState.update { currentState: DashboardState ->
+            currentState.copy(
+                dismissedSessions = currentState.dismissedSessions + sessionId
+            )
+        }
     }
 
     fun loadRecordingsForUser(userId: String) {
-        val recordings = recordingManager.getRecordingsForUser(userId)
-        _dashboardState.update { it.copy(selectedUserRecordings = recordings) }
+        viewModelScope.launch {
+            val recordings = recordingManager.getRecordingsForUser(userId)
+            _dashboardState.update { currentState: DashboardState -> currentState.copy(selectedUserRecordings = recordings) }
+        }
+    }
+
+    fun deleteRecording(userId: String, sessionId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Delete locally
+            recordingManager.deleteRecording(userId, sessionId)
+            
+            // Clear from Cloud (Supabase)
+            try {
+                SupabaseApi.delete("sessions", "session_id=eq.$sessionId")
+                SupabaseApi.delete("audio_chunks", "session_id=eq.$sessionId")
+                Log.d("SOS_AUDIT", "CLOUD_RECORDING_DELETED: $sessionId")
+            } catch (e: Exception) {
+                Log.e("SOS_AUDIT", "CLOUD_RECORDING_DELETE_ERROR: ${e.message}")
+            }
+
+            // Refresh recordings list
+            val updatedRecordings = recordingManager.getRecordingsForUser(userId)
+            _dashboardState.update { currentState: DashboardState -> currentState.copy(selectedUserRecordings = updatedRecordings) }
+        }
     }
 
     fun selectPlaybackRecording(recording: RecordingInfo?) {
-        _dashboardState.update { it.copy(selectedPlaybackRecording = recording) }
+        _dashboardState.update { currentState: DashboardState -> currentState.copy(selectedPlaybackRecording = recording) }
     }
 
     override fun onCleared() {
         super.onCleared()
-        sessionListenerJob?.remove()
-        userListenerJob?.remove()
+        userRealtime?.stop()
+        pairingRealtime?.stop()
+        removalRealtime?.stop()
+        sessionsRealtime?.stop()
     }
 }

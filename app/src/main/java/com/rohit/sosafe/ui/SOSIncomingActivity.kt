@@ -35,17 +35,11 @@ class SOSIncomingActivity : ComponentActivity() {
         val senderId = intent.getStringExtra("senderId") ?: ""
         val senderName = intent.getStringExtra("senderName") ?: "Someone"
 
-        // BUG FIX: Cancel the notification immediately to stop the "System" siren
+        // Cancel system notification banner so custom Activity takes control
         cancelNotification()
 
         showOnLockScreen()
         startSiren()
-
-        // Auto-stop siren after 3 seconds
-        handler.postDelayed({
-            Log.d("SOS_AUDIT", "SIREN_TIMEOUT: Stopping siren manually.")
-            stopSiren()
-        }, 3000)
 
         val session = SosSession(
             sessionId = sessionId,
@@ -140,14 +134,7 @@ class SOSIncomingActivity : ComponentActivity() {
             setTurnScreenOn(true)
             val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             keyguardManager.requestDismissKeyguard(this, null)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-            )
         }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 }

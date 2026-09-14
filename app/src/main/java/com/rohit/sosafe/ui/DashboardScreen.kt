@@ -46,7 +46,7 @@ fun GridBackground(modifier: Modifier = Modifier) {
     Canvas(modifier = modifier.fillMaxSize()) {
         val gridSpacing = 20.dp.toPx()
         val dotRadius = 1.dp.toPx()
-        val color = LightGrey.copy(alpha = 0.15f)
+        val color = LightGrey.copy(alpha = 0.2f)
 
         for (x in 0..(size.width / gridSpacing).toInt()) {
             for (y in 0..(size.height / gridSpacing).toInt()) {
@@ -78,7 +78,9 @@ fun DashboardScreen(
     var showMonitoringScreen by remember { mutableStateOf(false) }
     var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
     var contactToRename by remember { mutableStateOf<Contact?>(null) }
+    var contactToRemove by remember { mutableStateOf<Contact?>(null) }
     var contactForHistory by remember { mutableStateOf<Contact?>(null) }
+    var selectedHistoryContact by remember { mutableStateOf<Contact?>(null) }
 
     // Alert Popup Handling
     if (appMode == AppMode.GUARDIAN && state.activeEmergencySession != null) {
@@ -112,18 +114,154 @@ fun DashboardScreen(
         )
     }
 
-    if (showMonitoringScreen && (selectedMonitoringSession != null || state.selectedPlaybackRecording != null)) {
+    // Pairing Request Dialog Handling (2-Step Guardian Confirmation with custom renaming)
+    if (state.pendingPairingRequests.isNotEmpty()) {
+        val request = state.pendingPairingRequests.first()
+        val requesterName = request.fromUserName.ifBlank { "User ${request.fromUserId}" }
+        var contactCustomName by remember(request.requestId) { 
+            mutableStateOf("") 
+        }
+
+        AlertDialog(
+            onDismissRequest = { viewModel.declinePairingRequest(request) },
+            title = { Text("LINK REQUEST", color = PureWhite, fontWeight = FontWeight.Bold) },
+            text = { 
+                Column {
+                    Text(
+                        "$requesterName (${request.fromUserId}) wants to add you as a contact/guardian.",
+                        color = LightGrey,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "NAME THIS CONTACT",
+                        color = PureWhite,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    TextField(
+                        value = contactCustomName,
+                        onValueChange = { contactCustomName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Black,
+                            unfocusedContainerColor = Black,
+                            focusedTextColor = PureWhite,
+                            unfocusedTextColor = PureWhite,
+                            focusedIndicatorColor = PureWhite,
+                            unfocusedIndicatorColor = MediumGrey
+                        ),
+                        placeholder = { Text("E.G. Mom, Guardian 1", color = MediumGrey) },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.acceptPairingRequest(request, contactCustomName) },
+                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("ACCEPT", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.declinePairingRequest(request) }) {
+                    Text("DECLINE", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Contact Removal Confirmation Dialog
+    if (contactToRemove != null) {
+        val target = contactToRemove!!
+        AlertDialog(
+            onDismissRequest = { contactToRemove = null },
+            title = { Text("REMOVE CONTACT", color = DangerRed, fontWeight = FontWeight.Bold) },
+            text = { 
+                Text(
+                    "Are you sure you want to remove ${target.name} (${target.id}) from your contacts? They will be unlinked and notified.",
+                    color = PureWhite
+                ) 
+            },
+            confirmButton = {
+                Button(
+                    onClick = { 
+                        viewModel.removeContact(target.id)
+                        contactToRemove = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("REMOVE", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { contactToRemove = null }) {
+                    Text("CANCEL", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Removal Notification Alert Dialog (Received on the other device)
+    if (state.pendingRemovalNotifications.isNotEmpty()) {
+        val notification = state.pendingRemovalNotifications.first()
+        val localSavedContact = state.contacts.find { it.id == notification.removerId }
+        val removerDisplayName = when {
+            localSavedContact != null && localSavedContact.name.isNotBlank() -> localSavedContact.name
+            notification.removerName.isNotBlank() && !notification.removerName.startsWith("User ") -> notification.removerName
+            else -> "User ${notification.removerId}"
+        }
+
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissRemovalNotification(notification) },
+            title = { Text("CONTACT REMOVED", color = DangerRed, fontWeight = FontWeight.Bold) },
+            text = { 
+                Text(
+                    "$removerDisplayName has removed you from their emergency contacts list.",
+                    color = PureWhite
+                ) 
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.dismissRemovalNotification(notification) },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("OK", fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    val activeSessionFromState = remember(state.contacts, selectedMonitoringSession?.senderId) {
+        if (selectedMonitoringSession != null) {
+            state.contacts.find { it.id == selectedMonitoringSession?.senderId }?.activeSession ?: selectedMonitoringSession
+        } else null
+    }
+
+    if (showMonitoringScreen && (activeSessionFromState != null || state.selectedPlaybackRecording != null)) {
         MonitoringScreen(
-            session = selectedMonitoringSession,
+            session = activeSessionFromState,
             playbackInfo = state.selectedPlaybackRecording,
             displayName = if (state.selectedPlaybackRecording != null) {
-                contactForHistory?.name ?: ""
+                selectedHistoryContact?.name ?: contactForHistory?.name ?: ""
             } else {
                 state.contacts.find { it.id == selectedMonitoringSession!!.senderId }?.name ?: ""
             },
             onClose = { 
                 showMonitoringScreen = false
                 selectedMonitoringSession = null
+                selectedHistoryContact = null
                 viewModel.selectPlaybackRecording(null)
             }
         )
@@ -168,6 +306,7 @@ fun DashboardScreen(
                                             contactForHistory = contact
                                         },
                                         onRenameClick = { contactToRename = it },
+                                        onRemoveClick = { contactToRemove = it },
                                         onStopSOS = onStopSOS
                                     )
                                 } else {
@@ -183,7 +322,8 @@ fun DashboardScreen(
                                                 contactForHistory = contact
                                             }
                                         },
-                                        onRenameClick = { contactToRename = it }
+                                        onRenameClick = { contactToRename = it },
+                                        onRemoveClick = { contactToRemove = it }
                                     )
                                 }
                             }
@@ -217,12 +357,18 @@ fun DashboardScreen(
 
     if (contactForHistory != null) {
         SessionHistoryDialog(
+            userId = contactForHistory!!.id,
             contactName = contactForHistory!!.name,
             recordings = state.selectedUserRecordings,
             onDismiss = { contactForHistory = null },
             onPlayRecording = { recording ->
+                selectedHistoryContact = contactForHistory
                 viewModel.selectPlaybackRecording(recording)
                 showMonitoringScreen = true
+                contactForHistory = null
+            },
+            onDeleteRecording = { userId, sessionId ->
+                viewModel.deleteRecording(userId, sessionId)
             }
         )
     }
@@ -230,10 +376,12 @@ fun DashboardScreen(
 
 @Composable
 fun SessionHistoryDialog(
+    userId: String,
     contactName: String,
     recordings: List<RecordingInfo>,
     onDismiss: () -> Unit,
-    onPlayRecording: (RecordingInfo) -> Unit
+    onPlayRecording: (RecordingInfo) -> Unit,
+    onDeleteRecording: (String, String) -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -267,13 +415,29 @@ fun SessionHistoryDialog(
                                         onPlayRecording(recording)
                                     }
                                     .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = SuccessGreen)
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = SuccessGreen)
+                                    Spacer(modifier = Modifier.width(12.dp))
                                     Text(recording.durationText, color = PureWhite, style = MaterialTheme.typography.bodyMedium)
-                                    Text("ID: ${recording.sessionId.takeLast(6)}", color = LightGrey, style = MaterialTheme.typography.labelSmall)
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        onDeleteRecording(userId, recording.sessionId)
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Delete Recording",
+                                        tint = DangerRed,
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                 }
                             }
                         }
@@ -353,6 +517,7 @@ fun SenderDashboard(
     state: DashboardState, 
     onContactClick: (Contact) -> Unit, 
     onRenameClick: (Contact) -> Unit,
+    onRemoveClick: (Contact) -> Unit,
     onStopSOS: () -> Unit
 ) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -383,17 +548,38 @@ fun SenderDashboard(
         Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(modifier = Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
+            val netIcon = when {
+                !state.isNetworkConnected -> Icons.Default.WifiOff
+                state.networkType == "MOBILE DATA" -> Icons.Default.SignalCellular4Bar
+                else -> Icons.Default.Wifi
+            }
+            val (signalLabel, signalColor) = when {
+                !state.isNetworkConnected -> Pair("NO NETWORK", DangerRed)
+                state.networkQuality.contains("EXCELLENT") -> Pair("EXCELLENT", SuccessGreen)
+                else -> Pair("POOR", Color(0xFF2196F3)) // Blue for bad/poor
+            }
+
             StatusCard(
                 title = "NETWORK",
-                status = if (state.connectionStatus == "STABLE") "CONNECTED" else "OFFLINE",
-                icon = Icons.Default.Wifi,
+                status = if (state.isNetworkConnected) "CONNECTED" else "DISCONNECTED",
+                subtitle = "SIGNAL: $signalLabel",
+                icon = netIcon,
+                statusColor = signalColor,
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(16.dp))
+
+            val (broadcastIcon, broadcastLabel) = when (state.streamingMode) {
+                StreamingMode.WEBRTC_ONLY -> Pair(Icons.Default.GraphicEq, "WEBRTC MODE")
+                StreamingMode.CHUNK_ONLY -> Pair(Icons.Default.CloudUpload, "CHUNK MODE")
+                StreamingMode.HYBRID -> Pair(Icons.Default.Radio, "HYBRID MODE")
+            }
+
             StatusCard(
                 title = "BROADCAST",
                 status = if (state.isEmergency) "LIVE" else "READY",
-                icon = Icons.Default.Radio,
+                subtitle = broadcastLabel,
+                icon = broadcastIcon,
                 isLive = state.isEmergency,
                 modifier = Modifier.weight(1f)
             )
@@ -404,7 +590,8 @@ fun SenderDashboard(
             contacts = state.contacts, 
             showAddButton = false,
             onContactClick = onContactClick,
-            onRenameClick = onRenameClick
+            onRenameClick = onRenameClick,
+            onRemoveClick = onRemoveClick
         )
     }
 }
@@ -414,16 +601,58 @@ fun GuardianDashboard(
     state: DashboardState, 
     onAddContactClick: () -> Unit,
     onContactClick: (Contact) -> Unit,
-    onRenameClick: (Contact) -> Unit
+    onRenameClick: (Contact) -> Unit,
+    onRemoveClick: (Contact) -> Unit
 ) {
     Column {
+        Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            val netIcon = when {
+                !state.isNetworkConnected -> Icons.Default.WifiOff
+                state.networkType == "MOBILE DATA" -> Icons.Default.SignalCellular4Bar
+                else -> Icons.Default.Wifi
+            }
+            val (signalLabel, signalColor) = when {
+                !state.isNetworkConnected -> Pair("NO NETWORK", DangerRed)
+                state.networkQuality.contains("EXCELLENT") -> Pair("EXCELLENT", SuccessGreen)
+                else -> Pair("POOR", Color(0xFF2196F3)) // Blue for bad/poor
+            }
+
+            StatusCard(
+                title = "NETWORK",
+                status = if (state.isNetworkConnected) "CONNECTED" else "DISCONNECTED",
+                subtitle = "SIGNAL: $signalLabel",
+                icon = netIcon,
+                statusColor = signalColor,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+
+            val (broadcastIcon, broadcastLabel) = when (state.streamingMode) {
+                StreamingMode.WEBRTC_ONLY -> Pair(Icons.Default.GraphicEq, "WEBRTC MODE")
+                StreamingMode.CHUNK_ONLY -> Pair(Icons.Default.CloudUpload, "CHUNK MODE")
+                StreamingMode.HYBRID -> Pair(Icons.Default.Radio, "HYBRID MODE")
+            }
+
+            StatusCard(
+                title = "LISTENER SERVICE",
+                status = "ACTIVE",
+                subtitle = broadcastLabel,
+                icon = broadcastIcon,
+                isLive = false,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(modifier = Modifier.height(32.dp))
         ContactsSection(
             title = "PROTECTED USERS (Tap name for history)", 
             contacts = state.contacts, 
             showAddButton = true,
             onAddContactClick = onAddContactClick,
             onContactClick = onContactClick,
-            onRenameClick = onRenameClick
+            onRenameClick = onRenameClick,
+            onRemoveClick = onRemoveClick
         )
     }
 }
@@ -505,27 +734,54 @@ fun UserCodeCard(userCode: String) {
 }
 
 @Composable
-fun StatusCard(title: String, status: String, icon: ImageVector, isLive: Boolean = false, modifier: Modifier = Modifier) {
+fun StatusCard(
+    title: String,
+    status: String,
+    icon: ImageVector,
+    subtitle: String? = null,
+    statusColor: Color? = null,
+    isLive: Boolean = false,
+    modifier: Modifier = Modifier
+) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
             .background(if (isLive) PureWhite else DarkCard)
-            .padding(20.dp)
+            .padding(16.dp)
     ) {
-        Icon(
-            imageVector = icon, 
-            contentDescription = null, 
-            tint = if (isLive) Black else TextSecondary, 
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Text(text = title, style = MaterialTheme.typography.labelSmall, color = if (isLive) Black.copy(alpha = 0.6f) else TextSecondary)
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon, 
+                contentDescription = null, 
+                tint = if (isLive) Black else (statusColor ?: TextSecondary), 
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = title, 
+                style = MaterialTheme.typography.labelSmall, 
+                color = if (isLive) Black.copy(alpha = 0.6f) else TextSecondary,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
         Text(
             text = status, 
             style = MaterialTheme.typography.titleMedium, 
-            color = if (isLive) Black else TextPrimary, 
+            color = if (isLive) Black else (statusColor ?: TextPrimary), 
             fontWeight = FontWeight.Bold
         )
+        if (subtitle != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isLive) Black.copy(alpha = 0.7f) else LightGrey,
+                fontSize = 10.sp
+            )
+        }
     }
 }
 
@@ -536,7 +792,8 @@ fun ContactsSection(
     showAddButton: Boolean,
     onAddContactClick: () -> Unit = {},
     onContactClick: (Contact) -> Unit = {},
-    onRenameClick: (Contact) -> Unit = {}
+    onRenameClick: (Contact) -> Unit = {},
+    onRemoveClick: (Contact) -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(text = title, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
@@ -558,7 +815,8 @@ fun ContactsSection(
                     ContactItem(
                         contact = contact, 
                         onClick = { onContactClick(contact) },
-                        onRenameClick = { onRenameClick(contact) }
+                        onRenameClick = { onRenameClick(contact) },
+                        onRemoveClick = { onRemoveClick(contact) }
                     ) 
                 }
             }
@@ -582,7 +840,7 @@ fun ContactsSection(
 }
 
 @Composable
-fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit) {
+fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit, onRemoveClick: () -> Unit) {
     val isEmergency = contact.status == ContactStatus.EMERGENCY
     
     Row(
@@ -615,12 +873,30 @@ fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit
         }
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = contact.name, 
-                style = MaterialTheme.typography.bodyLarge, 
-                color = TextPrimary, 
-                fontWeight = FontWeight.SemiBold
-            )
+            val context = LocalContext.current
+            val latestRecordingDate = remember(contact.id) {
+                com.rohit.sosafe.utils.RecordingManager(context).getRecordingsForUser(contact.id).firstOrNull()?.durationText
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = contact.name, 
+                    style = MaterialTheme.typography.bodyLarge, 
+                    color = TextPrimary, 
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (latestRecordingDate != null) {
+                    Text(
+                        text = latestRecordingDate,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LightGrey,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                }
+            }
             Text(
                 text = when(contact.status) {
                     ContactStatus.EMERGENCY -> "!!! SOS ACTIVE !!!"
@@ -644,8 +920,13 @@ fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit
                 Text("VIEW", color = PureWhite, style = MaterialTheme.typography.labelSmall)
             }
         } else {
-            IconButton(onClick = onRenameClick) {
-                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = LightGrey, modifier = Modifier.size(18.dp))
+            Row {
+                IconButton(onClick = onRenameClick) {
+                    Icon(Icons.Default.Edit, contentDescription = "Rename", tint = LightGrey, modifier = Modifier.size(18.dp))
+                }
+                IconButton(onClick = onRemoveClick) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove", tint = DangerRed, modifier = Modifier.size(18.dp))
+                }
             }
         }
     }
@@ -710,6 +991,28 @@ fun SystemConfigSection(
         }
 
         Text(text = "SYSTEM SETTINGS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+
+        val context = LocalContext.current
+        Card(
+            modifier = Modifier.fillMaxWidth().clickable {
+                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                }
+                context.startActivity(intent)
+            },
+            colors = CardDefaults.cardColors(containerColor = DarkCard),
+            shape = RoundedCornerShape(4.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
+        ) {
+            Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Security, contentDescription = null, tint = LightGrey)
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text("MANAGE APP PERMISSIONS", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text("Location, Microphone, Notifications", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
 
         if (appMode == AppMode.SENDER) {
             Card(

@@ -13,6 +13,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,9 +46,15 @@ import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import android.widget.Toast
+import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.Marker
 import org.webrtc.PeerConnection
 import java.io.File
+
+import com.rohit.sosafe.data.supabase.SupabaseApi
+import com.rohit.sosafe.data.supabase.SupabaseRealtimeClient
+import kotlinx.coroutines.Dispatchers
 
 @Composable
 fun MonitoringScreen(
@@ -57,7 +65,6 @@ fun MonitoringScreen(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
-    val db = Firebase.firestore
     val scope = rememberCoroutineScope()
     val recordingManager = remember { RecordingManager(context) }
     
@@ -66,7 +73,7 @@ fun MonitoringScreen(
     // NEW ARCHITECTURE: Controllers
     val sessionController = remember(session?.sessionId) {
         if (session != null && !isPlayback) {
-            SessionController(db, session.sessionId)
+            SessionController(session.sessionId)
         } else null
     }
     
@@ -158,51 +165,131 @@ fun MonitoringScreen(
         }
     }
 
-    // Location Listener (Bound to Session State)
-    DisposableEffect(sessionState) {
-        if (sessionState !is SessionState.ACTIVE || isPlayback) return@DisposableEffect onDispose {}
-        
-        val activeSession = sessionState as SessionState.ACTIVE
-        val registration = db.collection(SoSafeContract.Collections.SESSIONS)
-            .document(activeSession.sessionId)
-            .addSnapshotListener { snapshot, _ ->
-                snapshot?.getGeoPoint(SoSafeContract.Fields.LAST_LOCATION)?.let {
-                    lastLocation = it
-                }
-            }
-        onDispose { registration.remove() }
-    }
+    var locationHistoryPoints by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
 
-    // Audio Chunk Listener (Bound to Session State)
-    DisposableEffect(sessionState, isWebRTCActive) {
-        if (sessionState !is SessionState.ACTIVE || isPlayback) return@DisposableEffect onDispose {}
+    // Location Listener (Bound to Session State or Playback)
+    DisposableEffect(sessionState, session?.sessionId ?: playbackInfo?.sessionId) {
+        val sId = session?.sessionId ?: playbackInfo?.sessionId ?: return@DisposableEffect onDispose {}
         
-        val activeSession = sessionState as SessionState.ACTIVE
-        val registration = db.collection(SoSafeContract.getAudioChunksSubcollection(activeSession.sessionId))
-            .orderBy(SoSafeContract.Fields.SEQUENCE, Query.Direction.ASCENDING)
-            .addSnapshotListener { snapshot, _ ->
-                snapshot?.documentChanges?.forEach { change ->
-                    if (change.type == DocumentChange.Type.ADDED) {
-                        val chunk = change.document.toObject(AudioChunk::class.java)
-                        
-                        // Only enqueue if WebRTC is not covering live audio
-                        if (!isWebRTCActive) {
-                            playbackController?.enqueue(chunk)
+        // Initial fetch of location history and last location
+        scope.launch(Dispatchers.IO) {
+            try {
+                val rows = SupabaseApi.select("sessions", "session_id=eq.$sId")
+                if (rows.length() > 0) {
+                    val obj = rows.getJSONObject(0)
+                    val lastLat = obj.optDouble("last_latitude", Double.NaN)
+                    val lastLng = obj.optDouble("last_longitude", Double.NaN)
+                    if (!lastLat.isNaN() && !lastLng.isNaN()) {
+                        lastLocation = com.google.firebase.firestore.GeoPoint(lastLat, lastLng)
+                    }
+
+                    val historyArr = obj.optJSONArray("location_history") ?: org.json.JSONArray()
+                    val pointsList = mutableListOf<GeoPoint>()
+                    for (i in 0 until historyArr.length()) {
+                        val pObj = historyArr.optJSONObject(i) ?: continue
+                        val lat = pObj.optDouble("lat", Double.NaN)
+                        val lng = pObj.optDouble("lng", Double.NaN)
+                        if (!lat.isNaN() && !lng.isNaN()) {
+                            pointsList.add(GeoPoint(lat, lng))
                         }
-                        
-                        // Always archive
-                        scope.launch {
-                            recordingManager.downloadAndSaveChunk(
-                                session!!.senderId, 
-                                session.sessionId, 
-                                chunk.sequence, 
-                                chunk.fileUrl
-                            )
+                    }
+                    if (pointsList.isNotEmpty()) {
+                        locationHistoryPoints = pointsList
+                        if (lastLocation == null) {
+                            lastLocation = com.google.firebase.firestore.GeoPoint(pointsList.last().latitude, pointsList.last().longitude)
                         }
                     }
                 }
+            } catch (e: Exception) {
+                Log.e("MonitoringScreen", "Error loading location history: ${e.message}")
             }
-        onDispose { registration.remove() }
+        }
+
+        val client = SupabaseRealtimeClient("sessions", "session_id", sId) { _, record ->
+            val lat = record.optDouble("last_latitude", Double.NaN)
+            val lng = record.optDouble("last_longitude", Double.NaN)
+            if (!lat.isNaN() && !lng.isNaN()) {
+                lastLocation = com.google.firebase.firestore.GeoPoint(lat, lng)
+            }
+
+            val historyArr = record.optJSONArray("location_history") ?: org.json.JSONArray()
+            val pointsList = mutableListOf<GeoPoint>()
+            for (i in 0 until historyArr.length()) {
+                val pObj = historyArr.optJSONObject(i) ?: continue
+                val pLat = pObj.optDouble("lat", Double.NaN)
+                val pLng = pObj.optDouble("lng", Double.NaN)
+                if (!pLat.isNaN() && !pLng.isNaN()) {
+                    pointsList.add(GeoPoint(pLat, pLng))
+                }
+            }
+            if (pointsList.isNotEmpty()) {
+                locationHistoryPoints = pointsList
+            }
+        }.apply { start() }
+
+        onDispose { client.stop() }
+    }
+
+    // Audio Chunk Listener (Bound to Session State)
+    var isInitialSnapshotLoaded by remember { mutableStateOf(false) }
+    var maxInitialSequence by remember { mutableIntStateOf(-1) }
+
+    DisposableEffect(sessionState, isWebRTCActive) {
+        val sId = session?.sessionId ?: playbackInfo?.sessionId ?: return@DisposableEffect onDispose {}
+
+        // Initial fetch
+        scope.launch(Dispatchers.IO) {
+            try {
+                val rows = SupabaseApi.select("audio_chunks", "session_id=eq.$sId&order=sequence.asc")
+                var maxSeq = -1
+                for (i in 0 until rows.length()) {
+                    val seq = rows.getJSONObject(i).optInt("sequence", -1)
+                    if (seq > maxSeq) maxSeq = seq
+                }
+                maxInitialSequence = maxSeq
+                isInitialSnapshotLoaded = true
+            } catch (e: Exception) {
+                Log.e("MonitoringScreen", "Error fetching initial chunks: ${e.message}")
+            }
+        }
+
+        val client = SupabaseRealtimeClient("audio_chunks", "session_id", sId) { eventType, record ->
+            if (eventType == "INSERT" || eventType == "UPDATE") {
+                val fileUrl = record.optString("file_url")
+                val seq = record.optInt("sequence", 0)
+                val duration = record.optInt("duration", 3)
+                val createdAt = record.optLong("created_at", System.currentTimeMillis())
+
+                val chunk = AudioChunk(
+                    fileUrl = fileUrl,
+                    sequence = seq,
+                    duration = duration,
+                    createdAt = createdAt
+                )
+
+                if (seq > maxInitialSequence) {
+                    if (!isWebRTCActive) {
+                        playbackController?.enqueue(chunk)
+                    }
+                }
+
+                scope.launch {
+                    val senderId = session?.senderId ?: "GUARDIAN"
+                    recordingManager.downloadAndSaveChunk(
+                        senderId,
+                        sId,
+                        chunk.sequence,
+                        chunk.fileUrl
+                    )
+                }
+            }
+        }.apply { start() }
+
+        onDispose { 
+            client.stop()
+            isInitialSnapshotLoaded = false
+            maxInitialSequence = -1
+        }
     }
 
     // UI Rendering
@@ -211,6 +298,7 @@ fun MonitoringScreen(
     Box(modifier = Modifier.fillMaxSize().background(Black).systemBarsPadding()) {
         val mapView = remember { MapView(context) }
         val markerState = remember { mutableStateOf<Marker?>(null) }
+        val polylineState = remember { mutableStateOf<Polyline?>(null) }
 
         val lifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(lifecycleOwner) {
@@ -237,6 +325,17 @@ fun MonitoringScreen(
                 }
             },
             update = { view ->
+                if (locationHistoryPoints.isNotEmpty()) {
+                    if (polylineState.value == null) {
+                        polylineState.value = Polyline().apply {
+                            outlinePaint.color = android.graphics.Color.RED
+                            outlinePaint.strokeWidth = 10f
+                            view.overlays.add(this)
+                        }
+                    }
+                    polylineState.value?.setPoints(locationHistoryPoints)
+                }
+
                 lastLocation?.let { firePoint ->
                     val osmPoint = GeoPoint(firePoint.latitude, firePoint.longitude)
                     if (markerState.value == null) {
@@ -309,8 +408,22 @@ fun MonitoringScreen(
                 border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    val dateStr = remember(playbackInfo, session) {
+                        val ts: Long = playbackInfo?.timestamp ?: when (val s = session?.startedAt) {
+                            is Long -> s
+                            is Number -> s.toLong()
+                            else -> System.currentTimeMillis()
+                        }
+                        val sdf = java.text.SimpleDateFormat("MMM dd, yyyy HH:mm", java.util.Locale.getDefault())
+                        sdf.format(java.util.Date(ts))
+                    }
+                    val headerTitle = when {
+                        displayName.isNotBlank() -> "$displayName ($dateStr)"
+                        session?.senderId != null -> "User ${session.senderId.take(4)} ($dateStr)"
+                        else -> "SOS RECORDING ($dateStr)"
+                    }
                     Text(
-                        text = if (displayName.isNotBlank()) displayName else "USER ID: ${session?.senderId ?: "N/A"}", 
+                        text = headerTitle, 
                         color = PureWhite, 
                         fontWeight = FontWeight.Bold
                     )
@@ -333,8 +446,20 @@ fun MonitoringScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    val stitchedFile = remember(sessionState) {
+                        if (sessionState is SessionState.ENDED) {
+                            val senderId = session?.senderId ?: "GUARDIAN"
+                            val sId = session?.sessionId ?: playbackInfo?.sessionId ?: ""
+                            if (sId.isNotBlank()) {
+                                recordingManager.finalizeRecording(senderId, sId)
+                            } else null
+                        } else null
+                    }
+
                     if (isPlayback && playbackInfo != null) {
-                        PlaybackPlayer(file = playbackInfo.file)
+                        PlaybackPlayer(file = playbackInfo.file, senderDisplayName = displayName)
+                    } else if (sessionState is SessionState.ENDED && stitchedFile != null) {
+                        PlaybackPlayer(file = stitchedFile, senderDisplayName = displayName)
                     } else {
                         StatusPlayerUI(
                             sessionState = sessionState,
@@ -382,7 +507,7 @@ fun StatusPlayerUI(
 }
 
 @Composable
-fun PlaybackPlayer(file: File) {
+fun PlaybackPlayer(file: File, senderDisplayName: String = "") {
     val context = LocalContext.current
     val mediaPlayer = remember(file) { 
         MediaPlayer().apply {
@@ -392,8 +517,8 @@ fun PlaybackPlayer(file: File) {
     }
     
     var isPlaying by remember { mutableStateOf(false) }
-    val duration by remember { mutableStateOf(mediaPlayer.duration) }
-    var position by remember { mutableStateOf(0) }
+    val duration by remember { mutableIntStateOf(mediaPlayer.duration) }
+    var position by remember { mutableIntStateOf(0) }
 
     DisposableEffect(file) {
         mediaPlayer.setOnCompletionListener { isPlaying = false }
@@ -405,42 +530,118 @@ fun PlaybackPlayer(file: File) {
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             position = mediaPlayer.currentPosition
-            delay(500)
+            delay(200)
         }
     }
 
-    Row(
+    fun formatMs(ms: Int): String {
+        val totalSec = Math.max(0, ms / 1000)
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        return String.format("%02d:%02d", min, sec)
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
             .background(Black)
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(12.dp)
     ) {
-        IconButton(onClick = {
-            if (isPlaying) mediaPlayer.pause() else mediaPlayer.start()
-            isPlaying = !isPlaying
-        }) {
-            Icon(
-                if (isPlaying) Icons.Default.Close else Icons.Default.Mic, 
-                contentDescription = null, 
-                tint = SuccessGreen
-            )
+        Text(
+            text = if (isPlaying) "PLAYING RECORDING..." else "RECORDING READY",
+            color = SuccessGreen,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Progress Slider with Seek Capability
+        Slider(
+            value = if (duration > 0) position.toFloat() else 0f,
+            onValueChange = { newPos ->
+                position = newPos.toInt()
+                mediaPlayer.seekTo(position)
+            },
+            valueRange = 0f..(if (duration > 0) duration.toFloat() else 1f),
+            colors = SliderDefaults.colors(
+                thumbColor = SuccessGreen,
+                activeTrackColor = SuccessGreen,
+                inactiveTrackColor = MediumGrey
+            ),
+            modifier = Modifier.fillMaxWidth().height(24.dp)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = formatMs(position), color = LightGrey, style = MaterialTheme.typography.labelSmall)
+            Text(text = formatMs(duration), color = LightGrey, style = MaterialTheme.typography.labelSmall)
         }
-        Spacer(modifier = Modifier.width(12.dp))
-        Column {
-            Text(
-                text = if (isPlaying) "PLAYING RECORDING..." else "RECORDING READY",
-                color = SuccessGreen,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold
-            )
-            LinearProgressIndicator(
-                progress = { if (duration > 0) position.toFloat() / duration else 0f },
-                modifier = Modifier.fillMaxWidth().height(2.dp).padding(top = 4.dp),
-                color = SuccessGreen,
-                trackColor = MediumGrey
-            )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Controls Row: Play/Pause, -10s, +10s, and Export Button
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Rewind -10s
+                IconButton(onClick = {
+                    val newPos = Math.max(0, mediaPlayer.currentPosition - 10000)
+                    mediaPlayer.seekTo(newPos)
+                    position = newPos
+                }) {
+                    Text("-10s", color = PureWhite, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                }
+
+                // Play / Pause
+                IconButton(onClick = {
+                    if (isPlaying) mediaPlayer.pause() else mediaPlayer.start()
+                    isPlaying = !isPlaying
+                }) {
+                    Icon(
+                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, 
+                        contentDescription = null, 
+                        tint = SuccessGreen,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+
+                // Forward +10s
+                IconButton(onClick = {
+                    val newPos = Math.min(duration, mediaPlayer.currentPosition + 10000)
+                    mediaPlayer.seekTo(newPos)
+                    position = newPos
+                }) {
+                    Text("+10s", color = PureWhite, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Button(
+                onClick = {
+                    try {
+                        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        val sanitizedSenderName = senderDisplayName.replace("[^a-zA-Z0-9_-]".toRegex(), "_").ifBlank { "Sender" }
+                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.getDefault())
+                        val timeStr = sdf.format(java.util.Date(file.lastModified()))
+                        val customFileName = "${sanitizedSenderName}_${timeStr}.m4a"
+                        val saveFile = File(downloadsDir, customFileName)
+                        file.copyTo(saveFile, overwrite = true)
+                        Toast.makeText(context, "Saved to Downloads: ${saveFile.name}", Toast.LENGTH_LONG).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Failed to save: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = DarkGrey, contentColor = PureWhite),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Text("SAVE", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

@@ -56,6 +56,28 @@ class AudioPlaybackController(
         }
     }
 
+    /**
+     * Enqueues chunks for LIVE SOS monitoring.
+     * Discards historical chunks older than maxAgeMs (default 10s) to prevent replaying from sequence 0 when re-opening map.
+     */
+    fun enqueueLive(chunk: AudioChunk, maxAgeMs: Long = 10000L) {
+        if (sessionState.value !is SessionState.ACTIVE) return
+        
+        val chunkTime = (chunk.createdAt as? Long) ?: System.currentTimeMillis()
+        val age = System.currentTimeMillis() - chunkTime
+
+        // If the chunk is older than 10 seconds, skip playing it during live monitoring
+        if (age > maxAgeMs) {
+            Log.d(TAG, "Skipping stale historical chunk (seq ${chunk.sequence}, age ${age}ms) during live monitoring")
+            return
+        }
+
+        queue.add(chunk)
+        if (!isCurrentlyPlaying) {
+            playNext()
+        }
+    }
+
     private fun playNext() {
         if (queue.isEmpty() || sessionState.value !is SessionState.ACTIVE) {
             isCurrentlyPlaying = false

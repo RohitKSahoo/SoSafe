@@ -7,10 +7,13 @@ import android.media.AudioAttributes
 import android.media.MediaRecorder
 import android.util.Log
 import androidx.core.content.ContextCompat
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.ktx.Firebase
-import com.rohit.sosafe.data.contracts.SoSafeContract
+import com.rohit.sosafe.data.supabase.SupabaseApi
+import com.rohit.sosafe.data.supabase.SupabaseRealtimeClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.*
@@ -20,16 +23,36 @@ class WebRTCManager(
     private val sessionId: String,
     private val onConnectionStateChange: (PeerConnection.PeerConnectionState) -> Unit,
     private val onAudioTrackReceived: (AudioTrack) -> Unit = {},
-    private val isReceiver: Boolean = false // Distinguish between Guardian (Receiver) and Sender
+    private val isReceiver: Boolean = false
 ) {
     private val TAG = "WebRTC_MANAGER"
-    private val db = Firebase.firestore
     private var peerConnection: PeerConnection? = null
     private var factory: PeerConnectionFactory? = null
     private val processedCandidates = mutableSetOf<String>()
-    
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private var sessionRealtime: SupabaseRealtimeClient? = null
+
     private val iceServers = listOf(
-        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        // STUN Servers (Direct P2P)
+        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+        PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
+
+        // TURN Relay Servers (Bypasses Carrier NAT / 4G / 5G / CGNAT restrictions)
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer()
     )
 
     private fun initializeFactory() {
@@ -43,8 +66,6 @@ class WebRTCManager(
 
         val options = PeerConnectionFactory.Options()
         
-        // For the Guardian (Receiver), we use USAGE_MEDIA to force dual-speaker output.
-        // For the Sender, we use VOICE_COMMUNICATION for better mic processing.
         val audioDeviceModuleBuilder = JavaAudioDeviceModule.builder(context.applicationContext)
             .setUseHardwareAcousticEchoCanceler(!isReceiver) 
             .setUseHardwareNoiseSuppressor(true)
@@ -96,8 +117,10 @@ class WebRTCManager(
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
-                        db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-                            .update(SoSafeContract.Fields.WEBRTC_OFFER, sdp.description)
+                        scope.launch(Dispatchers.IO) {
+                            val json = JSONObject().apply { put("webrtc_offer", sdp.description) }
+                            SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                        }
                     }
                 }, sdp)
             }
@@ -119,13 +142,22 @@ class WebRTCManager(
         
         peerConnection = factory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) {
-                val candidateMap = mapOf(
-                    "sdpMid" to candidate.sdpMid,
-                    "sdpMLineIndex" to candidate.sdpMLineIndex,
-                    "candidate" to candidate.sdp
-                )
-                db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-                    .update(SoSafeContract.Fields.ICE_CANDIDATES, FieldValue.arrayUnion(candidateMap))
+                scope.launch(Dispatchers.IO) {
+                    val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
+                    if (rows.length() > 0) {
+                        val sessionObj = rows.getJSONObject(0)
+                        val candidatesArr = sessionObj.optJSONArray("ice_candidates") ?: JSONArray()
+                        val candidateObj = JSONObject().apply {
+                            put("sdpMid", candidate.sdpMid)
+                            put("sdpMLineIndex", candidate.sdpMLineIndex)
+                            put("candidate", candidate.sdp)
+                        }
+                        candidatesArr.put(candidateObj)
+
+                        val updateObj = JSONObject().apply { put("ice_candidates", candidatesArr) }
+                        SupabaseApi.update("sessions", "session_id=eq.$sessionId", updateObj)
+                    }
+                }
             }
 
             override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
@@ -133,6 +165,20 @@ class WebRTCManager(
                 onConnectionStateChange(newState)
             }
 
+            override fun onIceConnectionChange(iceState: PeerConnection.IceConnectionState?) {
+                Log.d(TAG, "ICE Connection state changed: $iceState")
+                when (iceState) {
+                    PeerConnection.IceConnectionState.CONNECTED,
+                    PeerConnection.IceConnectionState.COMPLETED -> {
+                        onConnectionStateChange(PeerConnection.PeerConnectionState.CONNECTED)
+                    }
+                    PeerConnection.IceConnectionState.DISCONNECTED,
+                    PeerConnection.IceConnectionState.FAILED -> {
+                        onConnectionStateChange(PeerConnection.PeerConnectionState.FAILED)
+                    }
+                    else -> {}
+                }
+            }
             override fun onTrack(transceiver: RtpTransceiver) {
                 if (transceiver.receiver.track() is AudioTrack) {
                     onAudioTrackReceived(transceiver.receiver.track() as AudioTrack)
@@ -140,7 +186,6 @@ class WebRTCManager(
             }
 
             override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
-            override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
             override fun onIceConnectionReceivingChange(p0: Boolean) {}
             override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
             override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
@@ -155,18 +200,17 @@ class WebRTCManager(
     }
 
     private fun listenForOffer() {
-        db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-            .addSnapshotListener { snapshot, _ ->
-                val offer = snapshot?.getString(SoSafeContract.Fields.WEBRTC_OFFER)
-                if (offer != null && peerConnection?.signalingState() == PeerConnection.SignalingState.STABLE) {
-                    val sdp = SessionDescription(SessionDescription.Type.OFFER, offer)
-                    peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
-                        override fun onSetSuccess() {
-                            createAnswer()
-                        }
-                    }, sdp)
-                }
+        startSessionRealtimeListener { record ->
+            val offer = record.optString("webrtc_offer")
+            if (offer.isNotBlank() && peerConnection?.signalingState() == PeerConnection.SignalingState.STABLE) {
+                val sdp = SessionDescription(SessionDescription.Type.OFFER, offer)
+                peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                    override fun onSetSuccess() {
+                        createAnswer()
+                    }
+                }, sdp)
             }
+        }
     }
 
     private fun createAnswer() {
@@ -174,8 +218,10 @@ class WebRTCManager(
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
-                        db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-                            .update(SoSafeContract.Fields.WEBRTC_ANSWER, sdp.description)
+                        scope.launch(Dispatchers.IO) {
+                            val json = JSONObject().apply { put("webrtc_answer", sdp.description) }
+                            SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                        }
                     }
                 }, sdp)
             }
@@ -183,37 +229,58 @@ class WebRTCManager(
     }
 
     private fun listenForAnswer() {
-        db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-            .addSnapshotListener { snapshot, _ ->
-                val answer = snapshot?.getString(SoSafeContract.Fields.WEBRTC_ANSWER)
-                if (answer != null && peerConnection?.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
-                    val sdp = SessionDescription(SessionDescription.Type.ANSWER, answer)
-                    peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
-                }
+        startSessionRealtimeListener { record ->
+            val answer = record.optString("webrtc_answer")
+            if (answer.isNotBlank() && peerConnection?.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                val sdp = SessionDescription(SessionDescription.Type.ANSWER, answer)
+                peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
             }
+        }
     }
 
     private fun listenForIceCandidates() {
-        db.collection(SoSafeContract.Collections.SESSIONS).document(sessionId)
-            .addSnapshotListener { snapshot, _ ->
-                @Suppress("UNCHECKED_CAST")
-                val candidates = snapshot?.get(SoSafeContract.Fields.ICE_CANDIDATES) as? List<Map<String, Any>>
-                candidates?.forEach { data ->
-                    val sdp = data["candidate"] as? String ?: return@forEach
-                    if (!processedCandidates.contains(sdp)) {
-                        val candidate = IceCandidate(
-                            data["sdpMid"] as String,
-                            (data["sdpMLineIndex"] as Long).toInt(),
-                            sdp
-                        )
-                        peerConnection?.addIceCandidate(candidate)
-                        processedCandidates.add(sdp)
-                    }
+        startSessionRealtimeListener { record ->
+            val candidatesArr = record.optJSONArray("ice_candidates") ?: return@startSessionRealtimeListener
+            for (i in 0 until candidatesArr.length()) {
+                val data = candidatesArr.optJSONObject(i) ?: continue
+                val sdp = data.optString("candidate")
+                if (sdp.isNotBlank() && !processedCandidates.contains(sdp)) {
+                    val candidate = IceCandidate(
+                        data.optString("sdpMid"),
+                        data.optInt("sdpMLineIndex"),
+                        sdp
+                    )
+                    peerConnection?.addIceCandidate(candidate)
+                    processedCandidates.add(sdp)
                 }
             }
+        }
+    }
+
+    private fun startSessionRealtimeListener(onRecord: (JSONObject) -> Unit) {
+        // High-frequency polling (500ms) alongside Realtime WebSocket to guarantee instantaneous SDP handshake
+        scope.launch(Dispatchers.IO) {
+            while (peerConnection != null) {
+                try {
+                    val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
+                    if (rows.length() > 0) {
+                        onRecord(rows.getJSONObject(0))
+                    }
+                } catch (e: Exception) {}
+                kotlinx.coroutines.delay(500)
+            }
+        }
+
+        if (sessionRealtime == null) {
+            sessionRealtime = SupabaseRealtimeClient("sessions", "session_id", sessionId) { type, record ->
+                onRecord(record)
+            }.apply { start() }
+        }
     }
 
     fun stop() {
+        sessionRealtime?.stop()
+        sessionRealtime = null
         peerConnection?.close()
         peerConnection = null
         factory?.dispose()
