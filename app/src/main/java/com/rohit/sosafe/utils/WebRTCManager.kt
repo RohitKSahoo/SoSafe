@@ -33,7 +33,26 @@ class WebRTCManager(
     private var sessionRealtime: SupabaseRealtimeClient? = null
 
     private val iceServers = listOf(
-        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        // STUN Servers (Direct P2P)
+        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+        PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
+
+        // TURN Relay Servers (Bypasses Carrier NAT / 4G / 5G / CGNAT restrictions)
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer()
     )
 
     private fun initializeFactory() {
