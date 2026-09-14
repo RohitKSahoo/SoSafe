@@ -252,6 +252,18 @@ class RecordingManager(private val context: Context) {
             ?: emptyList()
     }
 
+    fun deleteRecording(userId: String, sessionId: String) {
+        try {
+            val folder = getSessionFolder(userId, sessionId)
+            if (folder.exists()) {
+                folder.deleteRecursively()
+                Log.d(AUDIT_TAG, "LOCAL_RECORDING_DELETED: $sessionId")
+            }
+        } catch (e: Exception) {
+            Log.e(AUDIT_TAG, "LOCAL_RECORDING_DELETE_ERROR: ${e.message}")
+        }
+    }
+
     private fun selectAudioTrack(extractor: MediaExtractor): Int {
         for (i in 0 until extractor.trackCount) {
             val format = extractor.getTrackFormat(i)

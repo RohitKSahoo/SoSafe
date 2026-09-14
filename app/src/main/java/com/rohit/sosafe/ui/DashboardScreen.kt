@@ -80,6 +80,7 @@ fun DashboardScreen(
     var contactToRename by remember { mutableStateOf<Contact?>(null) }
     var contactToRemove by remember { mutableStateOf<Contact?>(null) }
     var contactForHistory by remember { mutableStateOf<Contact?>(null) }
+    var selectedHistoryContact by remember { mutableStateOf<Contact?>(null) }
 
     // Alert Popup Handling
     if (appMode == AppMode.GUARDIAN && state.activeEmergencySession != null) {
@@ -247,13 +248,14 @@ fun DashboardScreen(
             session = selectedMonitoringSession,
             playbackInfo = state.selectedPlaybackRecording,
             displayName = if (state.selectedPlaybackRecording != null) {
-                contactForHistory?.name ?: ""
+                selectedHistoryContact?.name ?: contactForHistory?.name ?: ""
             } else {
                 state.contacts.find { it.id == selectedMonitoringSession!!.senderId }?.name ?: ""
             },
             onClose = { 
                 showMonitoringScreen = false
                 selectedMonitoringSession = null
+                selectedHistoryContact = null
                 viewModel.selectPlaybackRecording(null)
             }
         )
@@ -349,12 +351,18 @@ fun DashboardScreen(
 
     if (contactForHistory != null) {
         SessionHistoryDialog(
+            userId = contactForHistory!!.id,
             contactName = contactForHistory!!.name,
             recordings = state.selectedUserRecordings,
             onDismiss = { contactForHistory = null },
             onPlayRecording = { recording ->
+                selectedHistoryContact = contactForHistory
                 viewModel.selectPlaybackRecording(recording)
                 showMonitoringScreen = true
+                contactForHistory = null
+            },
+            onDeleteRecording = { userId, sessionId ->
+                viewModel.deleteRecording(userId, sessionId)
             }
         )
     }
@@ -362,10 +370,12 @@ fun DashboardScreen(
 
 @Composable
 fun SessionHistoryDialog(
+    userId: String,
     contactName: String,
     recordings: List<RecordingInfo>,
     onDismiss: () -> Unit,
-    onPlayRecording: (RecordingInfo) -> Unit
+    onPlayRecording: (RecordingInfo) -> Unit,
+    onDeleteRecording: (String, String) -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -399,13 +409,29 @@ fun SessionHistoryDialog(
                                         onPlayRecording(recording)
                                     }
                                     .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = SuccessGreen)
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = SuccessGreen)
+                                    Spacer(modifier = Modifier.width(12.dp))
                                     Text(recording.durationText, color = PureWhite, style = MaterialTheme.typography.bodyMedium)
-                                    Text("ID: ${recording.sessionId.takeLast(6)}", color = LightGrey, style = MaterialTheme.typography.labelSmall)
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        onDeleteRecording(userId, recording.sessionId)
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Delete Recording",
+                                        tint = DangerRed,
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                 }
                             }
                         }
@@ -753,12 +779,30 @@ fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit
         }
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = contact.name, 
-                style = MaterialTheme.typography.bodyLarge, 
-                color = TextPrimary, 
-                fontWeight = FontWeight.SemiBold
-            )
+            val context = LocalContext.current
+            val latestRecordingDate = remember(contact.id) {
+                com.rohit.sosafe.utils.RecordingManager(context).getRecordingsForUser(contact.id).firstOrNull()?.durationText
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = contact.name, 
+                    style = MaterialTheme.typography.bodyLarge, 
+                    color = TextPrimary, 
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (latestRecordingDate != null) {
+                    Text(
+                        text = latestRecordingDate,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LightGrey,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                }
+            }
             Text(
                 text = when(contact.status) {
                     ContactStatus.EMERGENCY -> "!!! SOS ACTIVE !!!"
@@ -853,6 +897,28 @@ fun SystemConfigSection(
         }
 
         Text(text = "SYSTEM SETTINGS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+
+        val context = LocalContext.current
+        Card(
+            modifier = Modifier.fillMaxWidth().clickable {
+                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                }
+                context.startActivity(intent)
+            },
+            colors = CardDefaults.cardColors(containerColor = DarkCard),
+            shape = RoundedCornerShape(4.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
+        ) {
+            Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Security, contentDescription = null, tint = LightGrey)
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text("MANAGE APP PERMISSIONS", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text("Location, Microphone, Notifications", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
 
         if (appMode == AppMode.SENDER) {
             Card(

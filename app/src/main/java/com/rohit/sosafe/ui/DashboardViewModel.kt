@@ -365,6 +365,26 @@ class DashboardViewModel(
         }
     }
 
+    fun deleteRecording(userId: String, sessionId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Delete locally
+            recordingManager.deleteRecording(userId, sessionId)
+            
+            // Clear from Cloud (Supabase)
+            try {
+                SupabaseApi.delete("sessions", "session_id=eq.$sessionId")
+                SupabaseApi.delete("audio_chunks", "session_id=eq.$sessionId")
+                Log.d("SOS_AUDIT", "CLOUD_RECORDING_DELETED: $sessionId")
+            } catch (e: Exception) {
+                Log.e("SOS_AUDIT", "CLOUD_RECORDING_DELETE_ERROR: ${e.message}")
+            }
+
+            // Refresh recordings list
+            val updatedRecordings = recordingManager.getRecordingsForUser(userId)
+            _dashboardState.update { currentState: DashboardState -> currentState.copy(selectedUserRecordings = updatedRecordings) }
+        }
+    }
+
     fun selectPlaybackRecording(recording: RecordingInfo?) {
         _dashboardState.update { currentState: DashboardState -> currentState.copy(selectedPlaybackRecording = recording) }
     }

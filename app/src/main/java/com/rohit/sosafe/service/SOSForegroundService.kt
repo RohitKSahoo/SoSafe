@@ -310,6 +310,10 @@ class SOSForegroundService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
         
+        serviceScope.launch(Dispatchers.Main) {
+            startLocationStreaming()
+        }
+
         serviceScope.launch(Dispatchers.IO) {
             val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
             
@@ -329,8 +333,6 @@ class SOSForegroundService : Service() {
                 notifyGuardiansOfSOS(sessionId, myId)
 
                 withContext(Dispatchers.Main) {
-                    startLocationStreaming()
-                    
                     if (mode == StreamingMode.HYBRID || mode == StreamingMode.CHUNK_ONLY) {
                         startAudioChunking()
                     }
@@ -420,7 +422,21 @@ class SOSForegroundService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun startLocationStreaming() {
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000).build()
+        // Fetch last known location immediately so Guardian gets instant initial location
+        fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+            loc?.let {
+                lastKnownLocation = GeoPoint(it.latitude, it.longitude)
+                uploadLocation(it.latitude, it.longitude)
+                Log.d(AUDIT_TAG, "INITIAL_LOCATION_CAPTURED: (${it.latitude}, ${it.longitude})")
+            }
+        }
+
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)
+            .setMinUpdateIntervalMillis(1000L)
+            .setMinUpdateDistanceMeters(0f)
+            .setWaitForAccurateLocation(false)
+            .build()
+
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 locationResult.lastLocation?.let { 

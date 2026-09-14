@@ -98,8 +98,10 @@ class WebRTCManager(
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
-                        val json = JSONObject().apply { put("webrtc_offer", sdp.description) }
-                        SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                        scope.launch(Dispatchers.IO) {
+                            val json = JSONObject().apply { put("webrtc_offer", sdp.description) }
+                            SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                        }
                     }
                 }, sdp)
             }
@@ -121,7 +123,7 @@ class WebRTCManager(
         
         peerConnection = factory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) {
-                scope.launch {
+                scope.launch(Dispatchers.IO) {
                     val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
                     if (rows.length() > 0) {
                         val sessionObj = rows.getJSONObject(0)
@@ -184,8 +186,10 @@ class WebRTCManager(
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
-                        val json = JSONObject().apply { put("webrtc_answer", sdp.description) }
-                        SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                        scope.launch(Dispatchers.IO) {
+                            val json = JSONObject().apply { put("webrtc_answer", sdp.description) }
+                            SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                        }
                     }
                 }, sdp)
             }
