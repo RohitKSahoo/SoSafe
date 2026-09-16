@@ -43,6 +43,7 @@ import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
+import androidx.activity.compose.BackHandler
 import com.rohit.sosafe.architecture.AudioPlaybackController
 import com.rohit.sosafe.architecture.SessionController
 import com.rohit.sosafe.architecture.SessionState
@@ -80,6 +81,10 @@ fun MonitoringScreen(
     val recordingManager = remember { RecordingManager(context) }
     
     val isPlayback = playbackInfo != null
+    
+    BackHandler {
+        onClose()
+    }
     
     // NEW ARCHITECTURE: Controllers
     val sessionController = remember(session?.sessionId) {
@@ -430,7 +435,7 @@ fun MonitoringScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            if (remoteVideoTrack != null) {
+            if (!isPlayback && sessionState is SessionState.ACTIVE && remoteVideoTrack != null) {
                 Button(
                     onClick = { showVideoFeedScreen = true },
                     colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),

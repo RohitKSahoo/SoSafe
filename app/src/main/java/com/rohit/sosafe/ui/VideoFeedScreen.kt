@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.activity.compose.BackHandler
 import com.rohit.sosafe.ui.theme.*
 import com.rohit.sosafe.utils.WebRTCManager
 import org.webrtc.RendererCommon
@@ -43,6 +44,10 @@ fun VideoFeedScreen(
     onSwitchCamera: () -> Unit,
     onBack: () -> Unit
 ) {
+    BackHandler {
+        onBack()
+    }
+
     val context = LocalContext.current
     var isCapturing by remember { mutableStateOf(false) }
 

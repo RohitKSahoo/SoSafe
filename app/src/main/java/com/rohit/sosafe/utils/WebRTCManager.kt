@@ -447,29 +447,35 @@ class WebRTCManager(
     }
 
     fun stop() {
-        try {
-            videoCapturer?.stopCapture()
-            videoCapturer?.dispose()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping video capturer: ${e.message}")
-        }
+        val pc = peerConnection
+        val fact = factory
+        val capturer = videoCapturer
+        val vSource = videoSource
+        val vTrack = videoTrack
+        val sRealtime = sessionRealtime
+
         videoCapturer = null
-
-        try { videoSource?.dispose() } catch (e: Exception) {}
         videoSource = null
-
-        try { videoTrack?.dispose() } catch (e: Exception) {}
         videoTrack = null
-
-        try { sessionRealtime?.stop() } catch (e: Exception) {}
         sessionRealtime = null
-
-        try { peerConnection?.close() } catch (e: Exception) {}
-        try { peerConnection?.dispose() } catch (e: Exception) {}
         peerConnection = null
-
-        try { factory?.dispose() } catch (e: Exception) {}
         factory = null
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                capturer?.stopCapture()
+                capturer?.dispose()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping video capturer: ${e.message}")
+            }
+
+            try { vSource?.dispose() } catch (e: Exception) {}
+            try { vTrack?.dispose() } catch (e: Exception) {}
+            try { sRealtime?.stop() } catch (e: Exception) {}
+            try { pc?.close() } catch (e: Exception) {}
+            try { pc?.dispose() } catch (e: Exception) {}
+            try { fact?.dispose() } catch (e: Exception) {}
+        }
     }
 
     open class SimpleSdpObserver : SdpObserver {
