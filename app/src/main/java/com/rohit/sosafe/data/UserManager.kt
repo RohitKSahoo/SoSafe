@@ -202,6 +202,33 @@ class UserManager(private val context: Context) {
     }
 
     /**
+     * Instantly pairs two devices symmetrically via QR Code scanning without waiting for approval.
+     */
+    suspend fun pairViaQrCode(targetUserId: String, customNameForTarget: String = ""): Result<Unit> = withContext(Dispatchers.IO) {
+        val myCode = getUserCode()
+        val targetCode = targetUserId.replace("-", "").trim().uppercase()
+        if (myCode == targetCode) {
+            return@withContext Result.failure(Exception("Cannot link to your own device ID"))
+        }
+        try {
+            if (customNameForTarget.isNotBlank()) {
+                updateContactName(targetCode, customNameForTarget)
+            }
+
+            // 1. Add targetCode to my contacts
+            addContactToUserList(myCode, targetCode)
+            // 2. Add myCode to targetCode contacts
+            addContactToUserList(targetCode, myCode)
+
+            Log.d(tag, "Instant QR pairing completed between $myCode and $targetCode")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(tag, "Error during QR pairing: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Declines a pending pairing request.
      */
     suspend fun declinePairingRequest(requestId: String): Result<Unit> = withContext(Dispatchers.IO) {

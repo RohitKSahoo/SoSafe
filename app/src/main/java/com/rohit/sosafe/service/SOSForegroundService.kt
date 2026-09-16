@@ -1,4 +1,4 @@
-package com.rohit.sosafe.service
+ package com.rohit.sosafe.service
 
 import android.annotation.SuppressLint
 import android.app.Notification
@@ -239,6 +239,40 @@ class SOSForegroundService : Service() {
 
         Log.d(AUDIT_TAG, "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
 
+        serviceScope.launch(Dispatchers.IO) {
+            while (ServiceState.isGuardianActive.value || isEmergencyActive) {
+                try {
+                    val rows = SupabaseApi.select("sessions", "status=eq.ACTIVE")
+                    val activeSessionIds = mutableSetOf<String>()
+                    for (i in 0 until rows.length()) {
+                        val obj = rows.getJSONObject(i)
+                        val sId = obj.optString("session_id")
+                        val senderId = obj.optString("sender_id")
+                        if (senderId in contacts) {
+                            activeSessionIds.add(sId)
+                            triggerSosIncomingAlert(
+                                sId,
+                                senderId,
+                                contactNames[senderId] ?: "User ${senderId.take(4)}"
+                            )
+                        }
+                    }
+                    // Clean up notifications for sessions that are no longer active
+                    val endedSessions = notifiedSessions.filter { it !in activeSessionIds }
+                    if (endedSessions.isNotEmpty()) {
+                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        for (eId in endedSessions) {
+                            notificationManager.cancel(eId.hashCode())
+                        }
+                        notifiedSessions.removeAll(endedSessions.toSet())
+                    }
+                } catch (e: Exception) {
+                    Log.e(AUDIT_TAG, "SERVICE_POLL_ERROR: ${e.message}")
+                }
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+
         sessionsRealtimeService = com.rohit.sosafe.data.supabase.SupabaseRealtimeClient("sessions") { type, record ->
             val sId = record.optString("session_id")
             val senderId = record.optString("sender_id")
@@ -255,6 +289,7 @@ class SOSForegroundService : Service() {
                     } else if (status == SoSafeContract.Status.ENDED) {
                         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                         notificationManager.cancel(sId.hashCode())
+                        notifiedSessions.remove(sId)
                     }
                 }
             }
@@ -316,6 +351,17 @@ class SOSForegroundService : Service() {
 
         serviceScope.launch(Dispatchers.IO) {
             val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
+            
+            // Clean up any stale active sessions for this sender in Supabase
+            try {
+                val endPreviousJson = JSONObject().apply {
+                    put("status", SoSafeContract.Status.ENDED)
+                    put("last_updated_at", System.currentTimeMillis())
+                }
+                SupabaseApi.update("sessions", "sender_id=eq.$myId&status=eq.ACTIVE", endPreviousJson)
+            } catch (e: Exception) {
+                Log.w(AUDIT_TAG, "STALE_SESSION_CLEANUP_WARN: ${e.message}")
+            }
             
             val sessionJson = JSONObject().apply {
                 put("session_id", sessionId)
@@ -497,9 +543,12 @@ class SOSForegroundService : Service() {
 
     private fun stopAndUploadChunk() {
         val fileToUpload = currentAudioFile
-        val sequence = audioSequence++
+        val sequence = audioSequence
         try {
-            mediaRecorder?.apply { stop(); release() }
+            mediaRecorder?.apply { 
+                try { stop() } catch(e: Exception) { Log.w(AUDIT_TAG, "MediaRecorder stop silent exception: ${e.message}") }
+                release() 
+            }
             mediaRecorder = null
             
             val myId = userManager.getUserCodeSync() ?: "UNKNOWN"

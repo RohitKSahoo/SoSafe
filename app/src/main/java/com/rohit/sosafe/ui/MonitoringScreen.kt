@@ -102,8 +102,8 @@ fun MonitoringScreen(
     var lastLocation by remember { mutableStateOf(playbackInfo?.lastLocation ?: session?.lastLocation) }
 
     // WebRTC State
-    var webrtcState by remember { mutableStateOf(PeerConnection.PeerConnectionState.NEW) }
-    var remoteVideoTrack by remember { mutableStateOf<org.webrtc.VideoTrack?>(null) }
+    var webrtcState by remember(session?.sessionId) { mutableStateOf(PeerConnection.PeerConnectionState.NEW) }
+    var remoteVideoTrack by remember(session?.sessionId) { mutableStateOf<org.webrtc.VideoTrack?>(null) }
     var pipOffsetX by remember { mutableFloatStateOf(0f) }
     var pipOffsetY by remember { mutableFloatStateOf(0f) }
     val isWebRTCActive = webrtcState == PeerConnection.PeerConnectionState.CONNECTED
@@ -373,8 +373,10 @@ fun MonitoringScreen(
         if (remoteVideoTrack != null) {
             Box(
                 modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 180.dp, end = 16.dp)
                     .offset { IntOffset(pipOffsetX.toInt(), pipOffsetY.toInt()) }
-                    .size(width = 160.dp, height = 210.dp)
+                    .size(width = 195.dp, height = 255.dp)
                     .padding(8.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(DarkCard)
@@ -399,28 +401,16 @@ fun MonitoringScreen(
                     update = { view ->
                         remoteVideoTrack?.addSink(view)
                     },
+                    onRelease = { view ->
+                        try {
+                            remoteVideoTrack?.removeSink(view)
+                            view.release()
+                        } catch (e: Exception) {
+                            Log.e("MonitoringScreen", "Error releasing SurfaceViewRenderer: ${e.message}")
+                        }
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
-
-                // Remote Camera Switch Button Overlay
-                IconButton(
-                    onClick = {
-                        webrtcManager?.switchCamera()
-                    },
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp)
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(Black.copy(alpha = 0.7f))
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Cameraswitch,
-                        contentDescription = "Switch Camera",
-                        tint = PureWhite,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
 
                 // Live Indicator Label
                 Text(
@@ -506,11 +496,35 @@ fun MonitoringScreen(
                         session?.senderId != null -> "User ${session.senderId.take(4)} ($dateStr)"
                         else -> "SOS RECORDING ($dateStr)"
                     }
-                    Text(
-                        text = headerTitle, 
-                        color = PureWhite, 
-                        fontWeight = FontWeight.Bold
-                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = headerTitle, 
+                            color = PureWhite, 
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        if (!isPlayback && sessionState is SessionState.ACTIVE) {
+                            IconButton(
+                                onClick = { webrtcManager?.switchCamera() },
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(DarkCard)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Cameraswitch,
+                                    contentDescription = "Switch Camera",
+                                    tint = SuccessGreen,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                     
                     Spacer(modifier = Modifier.height(8.dp))
                     

@@ -136,16 +136,64 @@ class WebRTCManager(
         return null
     }
 
-    fun switchCamera() {
-        (videoCapturer as? CameraVideoCapturer)?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
-            override fun onCameraSwitchDone(isFrontCamera: Boolean) {
-                Log.d(TAG, "Camera switched successfully. Front camera: $isFrontCamera")
-            }
+    private var isFrontFacingSelected = false
 
-            override fun onCameraSwitchError(errorDescription: String?) {
-                Log.e(TAG, "Camera switch failed: $errorDescription")
+    fun switchCamera() {
+        if (isReceiver) {
+            // Guardian device sending remote command to Sender
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val commandObj = JSONObject().apply {
+                        put("camera_command", "SWITCH_${System.currentTimeMillis()}")
+                    }
+                    SupabaseApi.update("sessions", "session_id=eq.$sessionId", commandObj)
+                    Log.d(TAG, "Sent remote camera switch command for session $sessionId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send camera switch command: ${e.message}")
+                }
             }
-        })
+        } else {
+            // Sender device executing camera hardware switch
+            val cameraCapturer = videoCapturer as? CameraVideoCapturer
+            if (cameraCapturer != null) {
+                val enumerator = Camera2Enumerator(context)
+                val deviceNames = enumerator.deviceNames
+                
+                // Find target camera device name (toggle between front and back)
+                val targetDevice = deviceNames.firstOrNull { name ->
+                    if (isFrontFacingSelected) enumerator.isBackFacing(name) else enumerator.isFrontFacing(name)
+                } ?: deviceNames.firstOrNull()
+
+                if (targetDevice != null) {
+                    cameraCapturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                        override fun onCameraSwitchDone(isFront: Boolean) {
+                            isFrontFacingSelected = isFront
+                            Log.d(TAG, "Camera switched successfully to device: $targetDevice (Front: $isFront)")
+                        }
+
+                        override fun onCameraSwitchError(errorDescription: String?) {
+                            Log.e(TAG, "Explicit camera switch failed ($errorDescription). Retrying default switch...")
+                            cameraCapturer.switchCamera(null)
+                        }
+                    }, targetDevice)
+                } else {
+                    cameraCapturer.switchCamera(null)
+                }
+            }
+        }
+    }
+
+    private var lastHandledCameraCommand: String = ""
+
+    private fun listenForCameraCommands() {
+        registerSessionListener { record ->
+            val cmd = record.optString("camera_command")
+            if (cmd.isNotBlank() && cmd != lastHandledCameraCommand) {
+                lastHandledCameraCommand = cmd
+                Log.d(TAG, "Received remote camera command: $cmd")
+                switchCamera()
+            }
+        }
     }
 
     fun startSender() {
@@ -199,6 +247,7 @@ class WebRTCManager(
         }, constraints)
 
         listenForAnswer()
+        listenForCameraCommands()
     }
 
     fun startReceiver() {
@@ -274,8 +323,10 @@ class WebRTCManager(
         listenForIceCandidates()
     }
 
+    private val sessionRecordListeners = mutableListOf<(JSONObject) -> Unit>()
+
     private fun listenForOffer() {
-        startSessionRealtimeListener { record ->
+        registerSessionListener { record ->
             val offer = record.optString("webrtc_offer")
             if (offer.isNotBlank() && peerConnection?.signalingState() == PeerConnection.SignalingState.STABLE) {
                 val sdp = SessionDescription(SessionDescription.Type.OFFER, offer)
@@ -311,7 +362,7 @@ class WebRTCManager(
     }
 
     private fun listenForAnswer() {
-        startSessionRealtimeListener { record ->
+        registerSessionListener { record ->
             val answer = record.optString("webrtc_answer")
             if (answer.isNotBlank() && peerConnection?.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
                 val sdp = SessionDescription(SessionDescription.Type.ANSWER, answer)
@@ -321,7 +372,7 @@ class WebRTCManager(
     }
 
     private fun listenForIceCandidates() {
-        startSessionRealtimeListener { record ->
+        registerSessionListener { record ->
             val iceArr = record.optJSONArray("ice_candidates") ?: JSONArray()
             for (i in 0 until iceArr.length()) {
                 val data = iceArr.getJSONObject(i)
@@ -339,23 +390,35 @@ class WebRTCManager(
         }
     }
 
-    private fun startSessionRealtimeListener(onRecord: (JSONObject) -> Unit) {
-        // High-frequency polling (500ms) alongside Realtime WebSocket to guarantee instantaneous SDP handshake
-        scope.launch(Dispatchers.IO) {
-            while (peerConnection != null) {
-                try {
-                    val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
-                    if (rows.length() > 0) {
-                        onRecord(rows.getJSONObject(0))
-                    }
-                } catch (e: Exception) {}
-                kotlinx.coroutines.delay(500)
-            }
+    private fun registerSessionListener(onRecord: (JSONObject) -> Unit) {
+        synchronized(sessionRecordListeners) {
+            sessionRecordListeners.add(onRecord)
         }
-
+        
         if (sessionRealtime == null) {
-            sessionRealtime = SupabaseRealtimeClient("sessions", "session_id", sessionId) { type, record ->
-                onRecord(record)
+            scope.launch(Dispatchers.IO) {
+                while (peerConnection != null) {
+                    try {
+                        val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
+                        if (rows.length() > 0) {
+                            val record = rows.getJSONObject(0)
+                            synchronized(sessionRecordListeners) {
+                                sessionRecordListeners.forEach { listener ->
+                                    try { listener(record) } catch (e: Exception) {}
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {}
+                    kotlinx.coroutines.delay(500)
+                }
+            }
+
+            sessionRealtime = SupabaseRealtimeClient("sessions", "session_id", sessionId) { _, record ->
+                synchronized(sessionRecordListeners) {
+                    sessionRecordListeners.forEach { listener ->
+                        try { listener(record) } catch (e: Exception) {}
+                    }
+                }
             }.apply { start() }
         }
     }
@@ -368,18 +431,22 @@ class WebRTCManager(
             Log.e(TAG, "Error stopping video capturer: ${e.message}")
         }
         videoCapturer = null
-        videoSource?.dispose()
+
+        try { videoSource?.dispose() } catch (e: Exception) {}
         videoSource = null
-        videoTrack?.dispose()
+
+        try { videoTrack?.dispose() } catch (e: Exception) {}
         videoTrack = null
 
-        sessionRealtime?.stop()
+        try { sessionRealtime?.stop() } catch (e: Exception) {}
         sessionRealtime = null
-        peerConnection?.close()
+
+        try { peerConnection?.close() } catch (e: Exception) {}
+        try { peerConnection?.dispose() } catch (e: Exception) {}
         peerConnection = null
-        factory?.dispose()
+
+        try { factory?.dispose() } catch (e: Exception) {}
         factory = null
-        rootEglBase.release()
     }
 
     open class SimpleSdpObserver : SdpObserver {

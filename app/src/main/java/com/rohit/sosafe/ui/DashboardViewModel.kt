@@ -15,6 +15,7 @@ import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.utils.ServiceState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -331,6 +332,19 @@ class DashboardViewModel(
         viewModelScope.launch {
             val result = userManager.sendPairingRequest(code, customName)
             onResult(result)
+        }
+    }
+
+    fun pairViaQrCode(scannedUserId: String, customName: String, onResult: (Result<Unit>) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = userManager.pairViaQrCode(scannedUserId, customName)
+            if (res.isSuccess) {
+                val code = userManager.getUserCode()
+                fetchUserContacts(code)
+            }
+            withContext(Dispatchers.Main) {
+                onResult(res)
+            }
         }
     }
 

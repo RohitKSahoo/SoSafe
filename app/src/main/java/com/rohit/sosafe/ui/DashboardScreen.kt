@@ -37,7 +37,10 @@ import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.data.StreamingMode
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.*
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
 import com.rohit.sosafe.utils.RecordingInfo
+import com.rohit.sosafe.utils.QrCodeUtils
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -81,6 +84,211 @@ fun DashboardScreen(
     var contactToRemove by remember { mutableStateOf<Contact?>(null) }
     var contactForHistory by remember { mutableStateOf<Contact?>(null) }
     var selectedHistoryContact by remember { mutableStateOf<Contact?>(null) }
+    var showMyQrDialog by remember { mutableStateOf(false) }
+    var showQrScannerDialog by remember { mutableStateOf(false) }
+    var scannedQrData by remember { mutableStateOf<ScannedQrData?>(null) }
+    val context = LocalContext.current
+
+    // My QR Code Display Dialog
+    if (showMyQrDialog) {
+        val rawCode = state.userCode.replace("-", "")
+        val qrBitmap = remember(rawCode) {
+            QrCodeUtils.generateQrCodeBitmap("sosafe://pair?id=$rawCode&name=User $rawCode", size = 600)
+        }
+
+        AlertDialog(
+            onDismissRequest = { showMyQrDialog = false },
+            title = { Text("MY PAIRING QR CODE", color = PureWhite, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Have your guardian scan this QR code to link instantly.", color = LightGrey, style = MaterialTheme.typography.bodySmall)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    if (qrBitmap != null) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "My QR Code",
+                            modifier = Modifier
+                                .size(240.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(PureWhite)
+                                .padding(12.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("ID: ${state.userCode}", color = SuccessGreen, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showMyQrDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("CLOSE", fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // QR Camera Scanner Dialog
+    if (showQrScannerDialog) {
+        QrScannerDialog(
+            onDismissRequest = { showQrScannerDialog = false },
+            onQrScanned = { data ->
+                showQrScannerDialog = false
+                scannedQrData = data
+            }
+        )
+    }
+
+    // Scanned Guardian Naming Confirmation Dialog
+    if (scannedQrData != null) {
+        val data = scannedQrData!!
+        var customContactName by remember(data.userId) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { scannedQrData = null },
+            title = { Text("LINK GUARDIAN QR", color = PureWhite, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Scanned Guardian ID: ${data.userId}", color = LightGrey, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("NAME THIS CONTACT", color = PureWhite, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    TextField(
+                        value = customContactName,
+                        onValueChange = { customContactName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Black,
+                            unfocusedContainerColor = Black,
+                            focusedTextColor = PureWhite,
+                            unfocusedTextColor = PureWhite,
+                            focusedIndicatorColor = PureWhite,
+                            unfocusedIndicatorColor = MediumGrey
+                        ),
+                        placeholder = { Text("Enter name...", color = MediumGrey) },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val targetId = data.userId
+                        val nameToSave = customContactName.ifBlank { data.userName }
+                        scannedQrData = null
+                        viewModel.pairViaQrCode(targetId, nameToSave) { res ->
+                            if (res.isSuccess) {
+                                Toast.makeText(context, "Linked successfully!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Pairing failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("SAVE & LINK", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { scannedQrData = null }) {
+                    Text("CANCEL", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Auto popup on Sender device when a new Guardian links via QR code
+    var newlyLinkedContactToName by remember { mutableStateOf<Contact?>(null) }
+    val promptDismissedContacts = remember { mutableStateOf(setOf<String>()) }
+    
+    LaunchedEffect(state.contacts, appMode) {
+        if (appMode == AppMode.SENDER) {
+            val unrenamedContact = state.contacts.find { contact ->
+                (contact.name.startsWith("User ", ignoreCase = true) || contact.name.startsWith("USER_", ignoreCase = true)) &&
+                        !promptDismissedContacts.value.contains(contact.id)
+            }
+            if (unrenamedContact != null && newlyLinkedContactToName == null) {
+                newlyLinkedContactToName = unrenamedContact
+            }
+        }
+    }
+
+    if (newlyLinkedContactToName != null) {
+        val targetContact = newlyLinkedContactToName!!
+        var senderSideName by remember(targetContact.id) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = {
+                promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
+                newlyLinkedContactToName = null
+            },
+            title = { Text("GUARDIAN LINKED", color = PureWhite, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "A new guardian (${targetContact.id}) has linked with your device.",
+                        color = LightGrey,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "NAME THIS GUARDIAN",
+                        color = PureWhite,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    TextField(
+                        value = senderSideName,
+                        onValueChange = { senderSideName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Black,
+                            unfocusedContainerColor = Black,
+                            focusedTextColor = PureWhite,
+                            unfocusedTextColor = PureWhite,
+                            focusedIndicatorColor = PureWhite,
+                            unfocusedIndicatorColor = MediumGrey
+                        ),
+                        placeholder = { Text("Enter name...", color = MediumGrey) },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val nameToSet = senderSideName.ifBlank { targetContact.name }
+                        viewModel.renameContact(targetContact.id, nameToSet)
+                        promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
+                        newlyLinkedContactToName = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("SAVE", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
+                    newlyLinkedContactToName = null
+                }) {
+                    Text("SKIP", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
 
     // Alert Popup Handling
     if (appMode == AppMode.GUARDIAN && state.activeEmergencySession != null) {
@@ -243,7 +451,7 @@ fun DashboardScreen(
         )
     }
 
-    val activeSessionFromState = remember(state.contacts, selectedMonitoringSession?.senderId) {
+    val activeSessionFromState = remember(state.contacts, selectedMonitoringSession?.sessionId, selectedMonitoringSession?.senderId) {
         if (selectedMonitoringSession != null) {
             state.contacts.find { it.id == selectedMonitoringSession?.senderId }?.activeSession ?: selectedMonitoringSession
         } else null
@@ -256,7 +464,8 @@ fun DashboardScreen(
             displayName = if (state.selectedPlaybackRecording != null) {
                 selectedHistoryContact?.name ?: contactForHistory?.name ?: ""
             } else {
-                state.contacts.find { it.id == selectedMonitoringSession!!.senderId }?.name ?: ""
+                val sId = selectedMonitoringSession?.senderId ?: activeSessionFromState?.senderId ?: ""
+                state.contacts.find { it.id == sId }?.name ?: ""
             },
             onClose = { 
                 showMonitoringScreen = false
@@ -307,12 +516,14 @@ fun DashboardScreen(
                                         },
                                         onRenameClick = { contactToRename = it },
                                         onRemoveClick = { contactToRemove = it },
-                                        onStopSOS = onStopSOS
+                                        onStopSOS = onStopSOS,
+                                        onShowQrClick = { showMyQrDialog = true }
                                     )
                                 } else {
                                     GuardianDashboard(
                                         state = state, 
                                         onAddContactClick = onAddContactClick,
+                                        onScanQrClick = { showQrScannerDialog = true },
                                         onContactClick = { contact ->
                                             if (contact.status == ContactStatus.EMERGENCY && contact.activeSession != null) {
                                                 selectedMonitoringSession = contact.activeSession
@@ -518,10 +729,15 @@ fun SenderDashboard(
     onContactClick: (Contact) -> Unit, 
     onRenameClick: (Contact) -> Unit,
     onRemoveClick: (Contact) -> Unit,
-    onStopSOS: () -> Unit
+    onStopSOS: () -> Unit,
+    onShowQrClick: () -> Unit
 ) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-        UserCodeCard(state.userCode)
+        UserCodeCard(
+            userCode = state.userCode,
+            onShowQrClick = onShowQrClick,
+            onScanQrClick = null
+        )
         Spacer(modifier = Modifier.height(24.dp))
         
         if (state.isEmergency) {
@@ -556,7 +772,7 @@ fun SenderDashboard(
             val (signalLabel, signalColor) = when {
                 !state.isNetworkConnected -> Pair("NO NETWORK", DangerRed)
                 state.networkQuality.contains("EXCELLENT") -> Pair("EXCELLENT", SuccessGreen)
-                else -> Pair("POOR", Color(0xFF2196F3)) // Blue for bad/poor
+                else -> Pair("POOR", Color(0xFF2196F3))
             }
 
             StatusCard(
@@ -598,11 +814,19 @@ fun SenderDashboard(
 fun GuardianDashboard(
     state: DashboardState, 
     onAddContactClick: () -> Unit,
+    onScanQrClick: () -> Unit,
     onContactClick: (Contact) -> Unit,
     onRenameClick: (Contact) -> Unit,
     onRemoveClick: (Contact) -> Unit
 ) {
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        UserCodeCard(
+            userCode = state.userCode,
+            onShowQrClick = null,
+            onScanQrClick = onScanQrClick
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
         Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(modifier = Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
@@ -614,7 +838,7 @@ fun GuardianDashboard(
             val (signalLabel, signalColor) = when {
                 !state.isNetworkConnected -> Pair("NO NETWORK", DangerRed)
                 state.networkQuality.contains("EXCELLENT") -> Pair("EXCELLENT", SuccessGreen)
-                else -> Pair("POOR", Color(0xFF2196F3)) // Blue for bad/poor
+                else -> Pair("POOR", Color(0xFF2196F3))
             }
 
             StatusCard(
@@ -695,7 +919,11 @@ fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> U
 }
 
 @Composable
-fun UserCodeCard(userCode: String) {
+fun UserCodeCard(
+    userCode: String,
+    onShowQrClick: (() -> Unit)? = null,
+    onScanQrClick: (() -> Unit)? = null
+) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
 
@@ -704,16 +932,17 @@ fun UserCodeCard(userCode: String) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(4.dp))
             .background(DarkCard)
-            .clickable {
-                clipboardManager.setText(AnnotatedString(userCode.replace("-", "")))
-                Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
-            }
-            .padding(24.dp)
+            .padding(20.dp)
     ) {
         Text(text = "MY ID", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(modifier = Modifier.height(8.dp))
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    clipboardManager.setText(AnnotatedString(userCode.replace("-", "")))
+                    Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
+                },
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -725,7 +954,41 @@ fun UserCodeCard(userCode: String) {
             )
             Icon(Icons.Default.ContentCopy, contentDescription = null, tint = LightGrey, modifier = Modifier.size(20.dp))
         }
-        Text(text = "Share this ID with your guardians", style = MaterialTheme.typography.labelSmall, color = LightGrey)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(text = "Share this ID or scan QR code to link instantly", style = MaterialTheme.typography.labelSmall, color = LightGrey)
+
+        if (onShowQrClick != null || onScanQrClick != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                if (onShowQrClick != null) {
+                    Button(
+                        onClick = onShowQrClick,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("MY QR", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                if (onShowQrClick != null && onScanQrClick != null) {
+                    Spacer(modifier = Modifier.width(12.dp))
+                }
+                if (onScanQrClick != null) {
+                    Button(
+                        onClick = onScanQrClick,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("SCAN QR", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 }
 
