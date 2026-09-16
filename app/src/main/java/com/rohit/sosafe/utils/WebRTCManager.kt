@@ -29,6 +29,8 @@ class WebRTCManager(
     private val TAG = "WebRTC_MANAGER"
     private var peerConnection: PeerConnection? = null
     private var factory: PeerConnectionFactory? = null
+    private var audioSource: AudioSource? = null
+    private var audioTrack: AudioTrack? = null
     private var videoCapturer: VideoCapturer? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
@@ -36,6 +38,10 @@ class WebRTCManager(
     private val pendingIceCandidates = mutableListOf<IceCandidate>()
     private val scope = CoroutineScope(Dispatchers.IO)
     private var sessionRealtime: SupabaseRealtimeClient? = null
+    private var isStopped = false
+    private var lastHandledOffer = ""
+    private var lastHandledReconnectRequest = ""
+    private var lastHandledCameraCommand = ""
 
     val rootEglBase: EglBase by lazy { eglBase }
 
@@ -141,11 +147,11 @@ class WebRTCManager(
 
     fun switchCamera() {
         if (isReceiver) {
-            // Guardian device sending remote command to Sender
+            // Guardian device sending remote command to Sender via webrtc_answer
             scope.launch(Dispatchers.IO) {
                 try {
                     val commandObj = JSONObject().apply {
-                        put("camera_command", "SWITCH_${System.currentTimeMillis()}")
+                        put("webrtc_answer", "CMD_SWITCH_CAMERA_${System.currentTimeMillis()}")
                     }
                     SupabaseApi.update("sessions", "session_id=eq.$sessionId", commandObj)
                     Log.d(TAG, "Sent remote camera switch command for session $sessionId")
@@ -184,19 +190,6 @@ class WebRTCManager(
         }
     }
 
-    private var lastHandledCameraCommand: String = ""
-
-    private fun listenForCameraCommands() {
-        registerSessionListener { record ->
-            val cmd = record.optString("camera_command")
-            if (cmd.isNotBlank() && cmd != lastHandledCameraCommand) {
-                lastHandledCameraCommand = cmd
-                Log.d(TAG, "Received remote camera command: $cmd")
-                switchCamera()
-            }
-        }
-    }
-
     fun startSender() {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Log.e(TAG, "Cannot start WebRTC Sender: RECORD_AUDIO permission not granted")
@@ -205,14 +198,14 @@ class WebRTCManager(
 
         Log.d(TAG, "Starting WebRTC Sender for session: $sessionId")
         initializeFactory()
-        createPeerConnection()
-        
-        val audioSource = factory?.createAudioSource(MediaConstraints())
-        val audioTrack = factory?.createAudioTrack("ARDAMSa0", audioSource)
-        peerConnection?.addTrack(audioTrack)
+
+        if (audioSource == null) {
+            audioSource = factory?.createAudioSource(MediaConstraints())
+            audioTrack = factory?.createAudioTrack("ARDAMSa0", audioSource)
+        }
 
         // Initialize Camera Video Track if permission is granted
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        if (videoCapturer == null && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             try {
                 videoCapturer = createCameraCapturer()
                 if (videoCapturer != null) {
@@ -221,13 +214,36 @@ class WebRTCManager(
                     videoCapturer?.startCapture(1280, 720, 30)
 
                     videoTrack = factory?.createVideoTrack("ARDAMSv0", videoSource)
-                    peerConnection?.addTrack(videoTrack)
-                    Log.d(TAG, "WebRTC Video Track created and added to PeerConnection")
+                    Log.d(TAG, "WebRTC Video Track created and started capture")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error initializing WebRTC Video Track: ${e.message}")
             }
         }
+
+        recreateSenderPeerConnection()
+        listenForAnswer()
+    }
+
+    private fun recreateSenderPeerConnection() {
+        Log.d(TAG, "Recreating Sender PeerConnection for fresh offer...")
+        try {
+            peerConnection?.close()
+            peerConnection?.dispose()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disposing old PeerConnection: ${e.message}")
+        }
+        peerConnection = null
+
+        synchronized(this) {
+            processedCandidates.clear()
+            pendingIceCandidates.clear()
+        }
+
+        createPeerConnection()
+
+        audioTrack?.let { peerConnection?.addTrack(it) }
+        videoTrack?.let { peerConnection?.addTrack(it) }
 
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
@@ -239,16 +255,18 @@ class WebRTCManager(
                 peerConnection?.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
                         scope.launch(Dispatchers.IO) {
-                            val json = JSONObject().apply { put("webrtc_offer", sdp.description) }
+                            val json = JSONObject().apply {
+                                put("webrtc_offer", sdp.description)
+                                put("webrtc_answer", "")
+                                put("ice_candidates", JSONArray())
+                            }
                             SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                            Log.d(TAG, "Fresh WebRTC Offer published to Supabase for session $sessionId")
                         }
                     }
                 }, sdp)
             }
         }, constraints)
-
-        listenForAnswer()
-        listenForCameraCommands()
     }
 
     fun startReceiver() {
@@ -256,6 +274,19 @@ class WebRTCManager(
         initializeFactory()
         createPeerConnection()
         listenForOffer()
+
+        // Send reconnect request to Sender so Sender produces a fresh offer and resets signaling state
+        scope.launch(Dispatchers.IO) {
+            try {
+                val reqJson = JSONObject().apply {
+                    put("webrtc_answer", "RECONNECT_${System.currentTimeMillis()}")
+                }
+                SupabaseApi.update("sessions", "session_id=eq.$sessionId", reqJson)
+                Log.d(TAG, "Sent WebRTC RECONNECT request for session $sessionId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending WebRTC RECONNECT request: ${e.message}")
+            }
+        }
     }
 
     private fun createPeerConnection() {
@@ -355,14 +386,19 @@ class WebRTCManager(
     private fun listenForOffer() {
         registerSessionListener { record ->
             val offer = record.optString("webrtc_offer")
-            if (offer.isNotBlank() && peerConnection?.signalingState() == PeerConnection.SignalingState.STABLE) {
-                val sdp = SessionDescription(SessionDescription.Type.OFFER, offer)
-                peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
-                    override fun onSetSuccess() {
-                        drainPendingIceCandidates()
-                        createAnswer()
-                    }
-                }, sdp)
+            val answer = record.optString("webrtc_answer")
+            if (offer.isNotBlank() && offer != lastHandledOffer && !answer.startsWith("RECONNECT_")) {
+                if (peerConnection?.signalingState() == PeerConnection.SignalingState.STABLE) {
+                    lastHandledOffer = offer
+                    Log.d(TAG, "Receiver applying fresh WebRTC offer from sender")
+                    val sdp = SessionDescription(SessionDescription.Type.OFFER, offer)
+                    peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                        override fun onSetSuccess() {
+                            drainPendingIceCandidates()
+                            createAnswer()
+                        }
+                    }, sdp)
+                }
             }
         }
     }
@@ -380,6 +416,7 @@ class WebRTCManager(
                         scope.launch(Dispatchers.IO) {
                             val json = JSONObject().apply { put("webrtc_answer", sdp.description) }
                             SupabaseApi.update("sessions", "session_id=eq.$sessionId", json)
+                            Log.d(TAG, "Receiver WebRTC answer published to Supabase for session $sessionId")
                         }
                     }
                 }, sdp)
@@ -390,10 +427,24 @@ class WebRTCManager(
     private fun listenForAnswer() {
         registerSessionListener { record ->
             val answer = record.optString("webrtc_answer")
-            if (answer.isNotBlank() && peerConnection?.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+            if (answer.startsWith("RECONNECT_")) {
+                if (answer != lastHandledReconnectRequest) {
+                    lastHandledReconnectRequest = answer
+                    Log.d(TAG, "Received reconnection request: $answer")
+                    recreateSenderPeerConnection()
+                }
+            } else if (answer.startsWith("CMD_SWITCH_CAMERA_")) {
+                if (answer != lastHandledCameraCommand) {
+                    lastHandledCameraCommand = answer
+                    Log.d(TAG, "Received camera switch command: $answer")
+                    switchCamera()
+                }
+            } else if (answer.isNotBlank() && peerConnection?.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                Log.d(TAG, "Received WebRTC answer, applying to PeerConnection")
                 val sdp = SessionDescription(SessionDescription.Type.ANSWER, answer)
                 peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
+                        Log.d(TAG, "WebRTC Answer applied successfully on Sender")
                         drainPendingIceCandidates()
                     }
                 }, sdp)
@@ -453,7 +504,7 @@ class WebRTCManager(
         
         if (sessionRealtime == null) {
             scope.launch(Dispatchers.IO) {
-                while (peerConnection != null) {
+                while (!isStopped) {
                     try {
                         val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
                         if (rows.length() > 0) {
@@ -480,16 +531,21 @@ class WebRTCManager(
     }
 
     fun stop() {
+        isStopped = true
         val pc = peerConnection
         val fact = factory
         val capturer = videoCapturer
         val vSource = videoSource
         val vTrack = videoTrack
+        val aSource = audioSource
+        val aTrack = audioTrack
         val sRealtime = sessionRealtime
 
         videoCapturer = null
         videoSource = null
         videoTrack = null
+        audioSource = null
+        audioTrack = null
         sessionRealtime = null
         peerConnection = null
         factory = null
@@ -502,6 +558,8 @@ class WebRTCManager(
                 Log.e(TAG, "Error stopping video capturer: ${e.message}")
             }
 
+            try { aTrack?.dispose() } catch (e: Exception) {}
+            try { aSource?.dispose() } catch (e: Exception) {}
             try { vSource?.dispose() } catch (e: Exception) {}
             try { vTrack?.dispose() } catch (e: Exception) {}
             try { sRealtime?.stop() } catch (e: Exception) {}

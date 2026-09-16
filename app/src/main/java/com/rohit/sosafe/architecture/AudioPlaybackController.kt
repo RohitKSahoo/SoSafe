@@ -37,7 +37,12 @@ class AudioPlaybackController(
             sessionState.collectLatest { state ->
                 when (state) {
                     is SessionState.ACTIVE -> {
-                        // Ready to play
+                        if (queue.isNotEmpty() && !isCurrentlyPlaying) {
+                            playNext()
+                        }
+                    }
+                    is SessionState.CONNECTING -> {
+                        // Allow buffering while connecting
                     }
                     else -> {
                         stopAndClear()
@@ -48,10 +53,11 @@ class AudioPlaybackController(
     }
 
     fun enqueue(chunk: AudioChunk) {
-        if (sessionState.value !is SessionState.ACTIVE) return
+        val currentState = sessionState.value
+        if (currentState !is SessionState.ACTIVE && currentState !is SessionState.CONNECTING) return
         
         queue.add(chunk)
-        if (!isCurrentlyPlaying) {
+        if (currentState is SessionState.ACTIVE && !isCurrentlyPlaying) {
             playNext()
         }
     }

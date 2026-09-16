@@ -266,12 +266,29 @@ fun MonitoringScreen(
             try {
                 val rows = SupabaseApi.select("audio_chunks", "session_id=eq.$sId&order=sequence.asc")
                 var maxSeq = -1
+                var latestChunk: AudioChunk? = null
                 for (i in 0 until rows.length()) {
-                    val seq = rows.getJSONObject(i).optInt("sequence", -1)
-                    if (seq > maxSeq) maxSeq = seq
+                    val obj = rows.getJSONObject(i)
+                    val seq = obj.optInt("sequence", -1)
+                    if (seq > maxSeq) {
+                        maxSeq = seq
+                        val fileUrl = obj.optString("file_url")
+                        val duration = obj.optInt("duration", 3)
+                        val createdAt = obj.optLong("created_at", System.currentTimeMillis())
+                        latestChunk = AudioChunk(fileUrl = fileUrl, sequence = seq, duration = duration, createdAt = createdAt)
+                    }
                 }
                 maxInitialSequence = maxSeq
                 isInitialSnapshotLoaded = true
+
+                if (latestChunk != null && !isWebRTCActive) {
+                    val age = System.currentTimeMillis() - ((latestChunk.createdAt as? Long) ?: 0L)
+                    if (age < 12000L) {
+                        withContext(Dispatchers.Main) {
+                            playbackController?.enqueue(latestChunk)
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("MonitoringScreen", "Error fetching initial chunks: ${e.message}")
             }
@@ -494,23 +511,6 @@ fun MonitoringScreen(
                             color = PureWhite, 
                             fontWeight = FontWeight.Bold
                         )
-
-                        if (!isPlayback && sessionState is SessionState.ACTIVE) {
-                            IconButton(
-                                onClick = { webrtcManager?.switchCamera() },
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(DarkCard)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Cameraswitch,
-                                    contentDescription = "Switch Camera",
-                                    tint = SuccessGreen,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
                     }
                     
                     Spacer(modifier = Modifier.height(8.dp))
