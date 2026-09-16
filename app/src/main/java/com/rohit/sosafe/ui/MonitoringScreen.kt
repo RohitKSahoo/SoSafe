@@ -143,10 +143,12 @@ fun MonitoringScreen(
                 },
                 onAudioTrackReceived = { track ->
                     track.setEnabled(true)
+                    webrtcState = PeerConnection.PeerConnectionState.CONNECTED
                     forceSpeakerphone()
                 },
                 onVideoTrackReceived = { videoTrack ->
                     remoteVideoTrack = videoTrack
+                    webrtcState = PeerConnection.PeerConnectionState.CONNECTED
                 }
             )
         } else null

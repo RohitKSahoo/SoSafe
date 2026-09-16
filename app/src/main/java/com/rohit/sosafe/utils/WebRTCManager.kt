@@ -264,19 +264,37 @@ class WebRTCManager(
         peerConnection = factory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) {
                 scope.launch(Dispatchers.IO) {
-                    val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
-                    if (rows.length() > 0) {
-                        val sessionObj = rows.getJSONObject(0)
-                        val candidatesArr = sessionObj.optJSONArray("ice_candidates") ?: JSONArray()
-                        val candidateObj = JSONObject().apply {
-                            put("sdpMid", candidate.sdpMid)
-                            put("sdpMLineIndex", candidate.sdpMLineIndex)
-                            put("candidate", candidate.sdp)
-                        }
-                        candidatesArr.put(candidateObj)
+                    synchronized(this@WebRTCManager) {
+                        try {
+                            val rows = SupabaseApi.select("sessions", "session_id=eq.$sessionId")
+                            if (rows.length() > 0) {
+                                val sessionObj = rows.getJSONObject(0)
+                                val candidatesArr = sessionObj.optJSONArray("ice_candidates") ?: JSONArray()
+                                
+                                val candidateSdp = candidate.sdp
+                                var exists = false
+                                for (i in 0 until candidatesArr.length()) {
+                                    if (candidatesArr.getJSONObject(i).optString("candidate") == candidateSdp) {
+                                        exists = true
+                                        break
+                                    }
+                                }
+                                
+                                if (!exists) {
+                                    val candidateObj = JSONObject().apply {
+                                        put("sdpMid", candidate.sdpMid)
+                                        put("sdpMLineIndex", candidate.sdpMLineIndex)
+                                        put("candidate", candidate.sdp)
+                                    }
+                                    candidatesArr.put(candidateObj)
 
-                        val updateObj = JSONObject().apply { put("ice_candidates", candidatesArr) }
-                        SupabaseApi.update("sessions", "session_id=eq.$sessionId", updateObj)
+                                    val updateObj = JSONObject().apply { put("ice_candidates", candidatesArr) }
+                                    SupabaseApi.update("sessions", "session_id=eq.$sessionId", updateObj)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error saving ICE candidate: ${e.message}")
+                        }
                     }
                 }
             }
@@ -373,6 +391,9 @@ class WebRTCManager(
 
     private fun listenForIceCandidates() {
         registerSessionListener { record ->
+            if (peerConnection?.remoteDescription == null) {
+                return@registerSessionListener
+            }
             val iceArr = record.optJSONArray("ice_candidates") ?: JSONArray()
             for (i in 0 until iceArr.length()) {
                 val data = iceArr.getJSONObject(i)
@@ -383,8 +404,10 @@ class WebRTCManager(
                         data.optInt("sdpMLineIndex"),
                         sdp
                     )
-                    peerConnection?.addIceCandidate(candidate)
-                    processedCandidates.add(sdp)
+                    val added = peerConnection?.addIceCandidate(candidate) ?: false
+                    if (added) {
+                        processedCandidates.add(sdp)
+                    }
                 }
             }
         }
