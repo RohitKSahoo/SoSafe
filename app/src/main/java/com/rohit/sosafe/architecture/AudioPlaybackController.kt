@@ -114,15 +114,24 @@ class AudioPlaybackController(
     private fun stopAndClear() {
         Log.d(TAG, "Stopping playback and clearing queue.")
         queue.clear()
-        if (mediaPlayer.isPlaying) {
-            mediaPlayer.stop()
+        try {
+            if (mediaPlayer.isPlaying) {
+                mediaPlayer.stop()
+            }
+            mediaPlayer.reset()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in stopAndClear: ${e.message}")
         }
         isCurrentlyPlaying = false
     }
 
     fun release() {
         stopAndClear()
-        mediaPlayer.release()
+        try {
+            mediaPlayer.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in release: ${e.message}")
+        }
         scope.cancel()
     }
 }

@@ -54,6 +54,7 @@ import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -118,8 +119,7 @@ fun MonitoringScreen(
     val forceSpeakerphone = {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         try {
-            // MODE_NORMAL is essential for dual-speaker media playback
-            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val devices = audioManager.availableCommunicationDevices
@@ -148,12 +148,10 @@ fun MonitoringScreen(
                 },
                 onAudioTrackReceived = { track ->
                     track.setEnabled(true)
-                    webrtcState = PeerConnection.PeerConnectionState.CONNECTED
                     forceSpeakerphone()
                 },
                 onVideoTrackReceived = { videoTrack ->
                     remoteVideoTrack = videoTrack
-                    webrtcState = PeerConnection.PeerConnectionState.CONNECTED
                 }
             )
         } else null
@@ -167,6 +165,8 @@ fun MonitoringScreen(
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val maxMusicVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVolume, 0)
+            val maxVoiceVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVoiceVolume, 0)
             
             sessionController?.startMonitoring()
             webrtcManager?.startReceiver()
@@ -318,6 +318,13 @@ fun MonitoringScreen(
 
     var showVideoFeedScreen by remember { mutableStateOf(false) }
 
+    LaunchedEffect(sessionState) {
+        if (sessionState is SessionState.ENDED) {
+            remoteVideoTrack = null
+            showVideoFeedScreen = false
+        }
+    }
+
     if (showVideoFeedScreen) {
         VideoFeedScreen(
             videoTrack = remoteVideoTrack,
@@ -346,7 +353,12 @@ fun MonitoringScreen(
                 lifecycleOwner.lifecycle.addObserver(observer)
                 onDispose { 
                     lifecycleOwner.lifecycle.removeObserver(observer)
-                    mapView.onDetach() 
+                    try {
+                        mapView.onPause()
+                        mapView.onDetach() 
+                    } catch (e: Exception) {
+                        Log.e("MonitoringScreen", "Error detaching mapView: ${e.message}")
+                    }
                 }
             }
 
@@ -435,7 +447,7 @@ fun MonitoringScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            if (!isPlayback && sessionState is SessionState.ACTIVE && remoteVideoTrack != null) {
+            if (!isPlayback && sessionState is SessionState.ACTIVE && isWebRTCActive && remoteVideoTrack != null) {
                 Button(
                     onClick = { showVideoFeedScreen = true },
                     colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
@@ -519,20 +531,53 @@ fun MonitoringScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    val stitchedFile = remember(sessionState) {
+                    var stitchedFile by remember { mutableStateOf<File?>(null) }
+                    var isFinalizingRecording by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(sessionState) {
                         if (sessionState is SessionState.ENDED) {
                             val senderId = session?.senderId ?: "GUARDIAN"
                             val sId = session?.sessionId ?: playbackInfo?.sessionId ?: ""
                             if (sId.isNotBlank()) {
-                                recordingManager.finalizeRecording(senderId, sId)
-                            } else null
-                        } else null
+                                isFinalizingRecording = true
+                                stitchedFile = withContext(Dispatchers.IO) {
+                                    try {
+                                        recordingManager.finalizeRecording(senderId, sId)
+                                    } catch (e: Exception) {
+                                        Log.e("MonitoringScreen", "Error finalizing recording: ${e.message}")
+                                        null
+                                    }
+                                }
+                                isFinalizingRecording = false
+                            }
+                        }
                     }
 
-                    if (isPlayback && playbackInfo != null) {
+                    if (playbackInfo != null) {
                         PlaybackPlayer(file = playbackInfo.file, senderDisplayName = displayName)
-                    } else if (sessionState is SessionState.ENDED && stitchedFile != null) {
-                        PlaybackPlayer(file = stitchedFile, senderDisplayName = displayName)
+                    } else if (sessionState is SessionState.ENDED) {
+                        val fileToPlay = stitchedFile
+                        if (fileToPlay != null) {
+                            PlaybackPlayer(file = fileToPlay, senderDisplayName = displayName)
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Black)
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = PureWhite, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = if (isFinalizingRecording) "STITCHING RECORDING..." else "PREPARING AUDIO RECORDING...",
+                                    color = LightGrey,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     } else {
                         StatusPlayerUI(
                             sessionState = sessionState,
@@ -583,27 +628,48 @@ fun StatusPlayerUI(
 @Composable
 fun PlaybackPlayer(file: File, senderDisplayName: String = "") {
     val context = LocalContext.current
-    val mediaPlayer = remember(file) { 
-        MediaPlayer().apply {
-            setDataSource(file.absolutePath)
-            prepare()
-        }
-    }
-    
     var isPlaying by remember { mutableStateOf(false) }
-    val duration by remember { mutableIntStateOf(mediaPlayer.duration) }
+    var duration by remember { mutableIntStateOf(0) }
     var position by remember { mutableIntStateOf(0) }
+    var isPrepared by remember { mutableStateOf(false) }
+
+    val mediaPlayer = remember(file) { MediaPlayer() }
 
     DisposableEffect(file) {
-        mediaPlayer.setOnCompletionListener { isPlaying = false }
+        try {
+            mediaPlayer.reset()
+            mediaPlayer.setDataSource(file.absolutePath)
+            mediaPlayer.setOnPreparedListener { mp ->
+                duration = mp.duration
+                isPrepared = true
+            }
+            mediaPlayer.setOnCompletionListener { 
+                isPlaying = false 
+            }
+            mediaPlayer.prepareAsync()
+        } catch (e: Exception) {
+            Log.e("PlaybackPlayer", "Error preparing media: ${e.message}")
+        }
+
         onDispose { 
-            mediaPlayer.release() 
+            try {
+                if (mediaPlayer.isPlaying) {
+                    mediaPlayer.stop()
+                }
+                mediaPlayer.release()
+            } catch (e: Exception) {
+                Log.e("PlaybackPlayer", "Error releasing media player: ${e.message}")
+            }
         }
     }
 
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
-            position = mediaPlayer.currentPosition
+            try {
+                if (isPrepared) {
+                    position = mediaPlayer.currentPosition
+                }
+            } catch (e: Exception) {}
             delay(200)
         }
     }
