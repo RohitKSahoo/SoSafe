@@ -23,14 +23,24 @@ class WebRTCManager(
     private val sessionId: String,
     private val onConnectionStateChange: (PeerConnection.PeerConnectionState) -> Unit,
     private val onAudioTrackReceived: (AudioTrack) -> Unit = {},
+    private val onVideoTrackReceived: (VideoTrack) -> Unit = {},
     private val isReceiver: Boolean = false
 ) {
     private val TAG = "WebRTC_MANAGER"
     private var peerConnection: PeerConnection? = null
     private var factory: PeerConnectionFactory? = null
+    private var videoCapturer: VideoCapturer? = null
+    private var videoSource: VideoSource? = null
+    private var videoTrack: VideoTrack? = null
     private val processedCandidates = mutableSetOf<String>()
     private val scope = CoroutineScope(Dispatchers.IO)
     private var sessionRealtime: SupabaseRealtimeClient? = null
+
+    val rootEglBase: EglBase by lazy { eglBase }
+
+    companion object {
+        val eglBase: EglBase by lazy { EglBase.create() }
+    }
 
     private val iceServers = listOf(
         // STUN Servers (Direct P2P)
@@ -91,12 +101,51 @@ class WebRTCManager(
             })
             .createAudioDeviceModule()
 
+        val encoderFactory = DefaultVideoEncoderFactory(rootEglBase.eglBaseContext, true, true)
+        val decoderFactory = DefaultVideoDecoderFactory(rootEglBase.eglBaseContext)
+
         factory = PeerConnectionFactory.builder()
             .setOptions(options)
             .setAudioDeviceModule(audioDeviceModule)
+            .setVideoEncoderFactory(encoderFactory)
+            .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
         
         audioDeviceModule.release()
+    }
+
+    private fun createCameraCapturer(): VideoCapturer? {
+        val enumerator = Camera2Enumerator(context)
+        val deviceNames = enumerator.deviceNames
+
+        // Try back camera first, fallback to front camera
+        for (deviceName in deviceNames) {
+            if (enumerator.isBackFacing(deviceName)) {
+                val capturer = enumerator.createCapturer(deviceName, null)
+                if (capturer != null) return capturer
+            }
+        }
+
+        for (deviceName in deviceNames) {
+            if (enumerator.isFrontFacing(deviceName)) {
+                val capturer = enumerator.createCapturer(deviceName, null)
+                if (capturer != null) return capturer
+            }
+        }
+
+        return null
+    }
+
+    fun switchCamera() {
+        (videoCapturer as? CameraVideoCapturer)?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+            override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                Log.d(TAG, "Camera switched successfully. Front camera: $isFrontCamera")
+            }
+
+            override fun onCameraSwitchError(errorDescription: String?) {
+                Log.e(TAG, "Camera switch failed: $errorDescription")
+            }
+        })
     }
 
     fun startSender() {
@@ -113,6 +162,29 @@ class WebRTCManager(
         val audioTrack = factory?.createAudioTrack("ARDAMSa0", audioSource)
         peerConnection?.addTrack(audioTrack)
 
+        // Initialize Camera Video Track if permission is granted
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            try {
+                videoCapturer = createCameraCapturer()
+                if (videoCapturer != null) {
+                    videoSource = factory?.createVideoSource(videoCapturer!!.isScreencast)
+                    videoCapturer?.initialize(SurfaceTextureHelper.create("WebRTC_CameraThread", rootEglBase.eglBaseContext), context, videoSource?.capturerObserver)
+                    videoCapturer?.startCapture(1280, 720, 30)
+
+                    videoTrack = factory?.createVideoTrack("ARDAMSv0", videoSource)
+                    peerConnection?.addTrack(videoTrack)
+                    Log.d(TAG, "WebRTC Video Track created and added to PeerConnection")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing WebRTC Video Track: ${e.message}")
+            }
+        }
+
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+        }
+
         peerConnection?.createOffer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(object : SimpleSdpObserver() {
@@ -124,7 +196,7 @@ class WebRTCManager(
                     }
                 }, sdp)
             }
-        }, MediaConstraints())
+        }, constraints)
 
         listenForAnswer()
     }
@@ -180,8 +252,11 @@ class WebRTCManager(
                 }
             }
             override fun onTrack(transceiver: RtpTransceiver) {
-                if (transceiver.receiver.track() is AudioTrack) {
-                    onAudioTrackReceived(transceiver.receiver.track() as AudioTrack)
+                val track = transceiver.receiver.track()
+                if (track is AudioTrack) {
+                    onAudioTrackReceived(track)
+                } else if (track is VideoTrack) {
+                    onVideoTrackReceived(track)
                 }
             }
 
@@ -214,6 +289,11 @@ class WebRTCManager(
     }
 
     private fun createAnswer() {
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+        }
+
         peerConnection?.createAnswer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(object : SimpleSdpObserver() {
@@ -225,7 +305,9 @@ class WebRTCManager(
                     }
                 }, sdp)
             }
-        }, MediaConstraints())
+        }, constraints)
+
+        listenForIceCandidates()
     }
 
     private fun listenForAnswer() {
@@ -240,9 +322,9 @@ class WebRTCManager(
 
     private fun listenForIceCandidates() {
         startSessionRealtimeListener { record ->
-            val candidatesArr = record.optJSONArray("ice_candidates") ?: return@startSessionRealtimeListener
-            for (i in 0 until candidatesArr.length()) {
-                val data = candidatesArr.optJSONObject(i) ?: continue
+            val iceArr = record.optJSONArray("ice_candidates") ?: JSONArray()
+            for (i in 0 until iceArr.length()) {
+                val data = iceArr.getJSONObject(i)
                 val sdp = data.optString("candidate")
                 if (sdp.isNotBlank() && !processedCandidates.contains(sdp)) {
                     val candidate = IceCandidate(
@@ -279,12 +361,25 @@ class WebRTCManager(
     }
 
     fun stop() {
+        try {
+            videoCapturer?.stopCapture()
+            videoCapturer?.dispose()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping video capturer: ${e.message}")
+        }
+        videoCapturer = null
+        videoSource?.dispose()
+        videoSource = null
+        videoTrack?.dispose()
+        videoTrack = null
+
         sessionRealtime?.stop()
         sessionRealtime = null
         peerConnection?.close()
         peerConnection = null
         factory?.dispose()
         factory = null
+        rootEglBase.release()
     }
 
     open class SimpleSdpObserver : SdpObserver {

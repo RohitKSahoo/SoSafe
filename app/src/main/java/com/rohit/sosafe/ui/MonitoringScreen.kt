@@ -7,7 +7,17 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.sp
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -93,6 +103,9 @@ fun MonitoringScreen(
 
     // WebRTC State
     var webrtcState by remember { mutableStateOf(PeerConnection.PeerConnectionState.NEW) }
+    var remoteVideoTrack by remember { mutableStateOf<org.webrtc.VideoTrack?>(null) }
+    var pipOffsetX by remember { mutableFloatStateOf(0f) }
+    var pipOffsetY by remember { mutableFloatStateOf(0f) }
     val isWebRTCActive = webrtcState == PeerConnection.PeerConnectionState.CONNECTED
 
     // Helper to force speakerphone routing
@@ -130,6 +143,9 @@ fun MonitoringScreen(
                 onAudioTrackReceived = { track ->
                     track.setEnabled(true)
                     forceSpeakerphone()
+                },
+                onVideoTrackReceived = { videoTrack ->
+                    remoteVideoTrack = videoTrack
                 }
             )
         } else null
@@ -353,6 +369,74 @@ fun MonitoringScreen(
             },
             modifier = Modifier.fillMaxSize()
         )
+        // Draggable Floating WebRTC Video PiP Window
+        if (remoteVideoTrack != null) {
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(pipOffsetX.toInt(), pipOffsetY.toInt()) }
+                    .size(width = 160.dp, height = 210.dp)
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(DarkCard)
+                    .border(2.dp, SuccessGreen, RoundedCornerShape(12.dp))
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            pipOffsetX += dragAmount.x
+                            pipOffsetY += dragAmount.y
+                        }
+                    }
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        SurfaceViewRenderer(ctx).apply {
+                            init(WebRTCManager.eglBase.eglBaseContext, null)
+                            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                            setEnableHardwareScaler(true)
+                            remoteVideoTrack?.addSink(this)
+                        }
+                    },
+                    update = { view ->
+                        remoteVideoTrack?.addSink(view)
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // Remote Camera Switch Button Overlay
+                IconButton(
+                    onClick = {
+                        webrtcManager?.switchCamera()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Black.copy(alpha = 0.7f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Cameraswitch,
+                        contentDescription = "Switch Camera",
+                        tint = PureWhite,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // Live Indicator Label
+                Text(
+                    text = "LIVE VIDEO",
+                    color = PureWhite,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 9.sp,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .background(DangerRed, RoundedCornerShape(2.dp))
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+            }
+        }
 
         // Overlay UI
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {

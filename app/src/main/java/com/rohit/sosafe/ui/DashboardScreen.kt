@@ -560,7 +560,6 @@ fun SenderDashboard(
             }
 
             StatusCard(
-                title = "NETWORK",
                 status = if (state.isNetworkConnected) "CONNECTED" else "DISCONNECTED",
                 subtitle = "SIGNAL: $signalLabel",
                 icon = netIcon,
@@ -576,7 +575,6 @@ fun SenderDashboard(
             }
 
             StatusCard(
-                title = "BROADCAST",
                 status = if (state.isEmergency) "LIVE" else "READY",
                 subtitle = broadcastLabel,
                 icon = broadcastIcon,
@@ -620,7 +618,6 @@ fun GuardianDashboard(
             }
 
             StatusCard(
-                title = "NETWORK",
                 status = if (state.isNetworkConnected) "CONNECTED" else "DISCONNECTED",
                 subtitle = "SIGNAL: $signalLabel",
                 icon = netIcon,
@@ -636,7 +633,6 @@ fun GuardianDashboard(
             }
 
             StatusCard(
-                title = "LISTENER SERVICE",
                 status = "ACTIVE",
                 subtitle = broadcastLabel,
                 icon = broadcastIcon,
@@ -735,7 +731,6 @@ fun UserCodeCard(userCode: String) {
 
 @Composable
 fun StatusCard(
-    title: String,
     status: String,
     icon: ImageVector,
     subtitle: String? = null,
@@ -760,21 +755,14 @@ fun StatusCard(
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = title, 
-                style = MaterialTheme.typography.labelSmall, 
-                color = if (isLive) Black.copy(alpha = 0.6f) else TextSecondary,
-                fontWeight = FontWeight.SemiBold
+                text = status, 
+                style = MaterialTheme.typography.titleMedium, 
+                color = if (isLive) Black else PureWhite, 
+                fontWeight = FontWeight.Bold
             )
         }
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = status, 
-            style = MaterialTheme.typography.titleMedium, 
-            color = if (isLive) Black else (statusColor ?: TextPrimary), 
-            fontWeight = FontWeight.Bold
-        )
         if (subtitle != null) {
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.labelSmall,

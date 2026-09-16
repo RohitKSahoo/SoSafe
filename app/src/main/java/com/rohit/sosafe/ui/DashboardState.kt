@@ -36,5 +36,6 @@ data class DashboardState(
     val dismissedSessions: List<String> = emptyList(),
     val selectedUserRecordings: List<RecordingInfo> = emptyList(),
     val selectedPlaybackRecording: RecordingInfo? = null,
-    val streamingMode: StreamingMode = StreamingMode.HYBRID
+    val streamingMode: StreamingMode = StreamingMode.HYBRID,
+    val remoteVideoTrack: org.webrtc.VideoTrack? = null
 )
