@@ -20,6 +20,7 @@ import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MyLocation
@@ -308,128 +309,80 @@ fun MonitoringScreen(
         }
     }
 
-    // UI Rendering
-    Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
-    
-    Box(modifier = Modifier.fillMaxSize().background(Black).systemBarsPadding()) {
-        val mapView = remember { MapView(context) }
-        val markerState = remember { mutableStateOf<Marker?>(null) }
-        val polylineState = remember { mutableStateOf<Polyline?>(null) }
+    var showVideoFeedScreen by remember { mutableStateOf(false) }
 
-        val lifecycleOwner = LocalLifecycleOwner.current
-        DisposableEffect(lifecycleOwner) {
-            val observer = LifecycleEventObserver { _, event ->
-                when (event) {
-                    Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                    Lifecycle.Event.ON_PAUSE -> mapView.onPause()
-                    else -> {}
-                }
-            }
-            lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose { 
-                lifecycleOwner.lifecycle.removeObserver(observer)
-                mapView.onDetach() 
-            }
-        }
-
-        AndroidView(
-            factory = { 
-                mapView.apply {
-                    setTileSource(TileSourceFactory.MAPNIK)
-                    setMultiTouchControls(true)
-                    controller.setZoom(19.0)
-                }
-            },
-            update = { view ->
-                if (locationHistoryPoints.isNotEmpty()) {
-                    if (polylineState.value == null) {
-                        polylineState.value = Polyline().apply {
-                            outlinePaint.color = android.graphics.Color.RED
-                            outlinePaint.strokeWidth = 10f
-                            view.overlays.add(this)
-                        }
-                    }
-                    polylineState.value?.setPoints(locationHistoryPoints)
-                }
-
-                lastLocation?.let { firePoint ->
-                    val osmPoint = GeoPoint(firePoint.latitude, firePoint.longitude)
-                    if (markerState.value == null) {
-                        markerState.value = Marker(view).apply {
-                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                            title = displayName.ifBlank { "LAST KNOWN LOCATION" }
-                            icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_mylocation)
-                            view.overlays.add(this)
-                        }
-                    }
-                    markerState.value?.position = osmPoint
-                    view.controller.animateTo(osmPoint)
-                    view.invalidate()
-                }
-            },
-            modifier = Modifier.fillMaxSize()
+    if (showVideoFeedScreen) {
+        VideoFeedScreen(
+            videoTrack = remoteVideoTrack,
+            displayName = displayName,
+            onSwitchCamera = { webrtcManager?.switchCamera() },
+            onBack = { showVideoFeedScreen = false }
         )
-        // Draggable Floating WebRTC Video PiP Window
-        if (remoteVideoTrack != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(bottom = 180.dp, end = 16.dp)
-                    .offset { IntOffset(pipOffsetX.toInt(), pipOffsetY.toInt()) }
-                    .size(width = 195.dp, height = 255.dp)
-                    .padding(8.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(DarkCard)
-                    .border(2.dp, SuccessGreen, RoundedCornerShape(12.dp))
-                    .pointerInput(Unit) {
-                        detectDragGestures { change, dragAmount ->
-                            change.consume()
-                            pipOffsetX += dragAmount.x
-                            pipOffsetY += dragAmount.y
-                        }
+    } else {
+        // UI Rendering
+        Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+        
+        Box(modifier = Modifier.fillMaxSize().background(Black).systemBarsPadding()) {
+            val mapView = remember { MapView(context) }
+            val markerState = remember { mutableStateOf<Marker?>(null) }
+            val polylineState = remember { mutableStateOf<Polyline?>(null) }
+
+            val lifecycleOwner = LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                        Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                        else -> {}
                     }
-            ) {
-                AndroidView(
-                    factory = { ctx ->
-                        SurfaceViewRenderer(ctx).apply {
-                            init(WebRTCManager.eglBase.eglBaseContext, null)
-                            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-                            setEnableHardwareScaler(true)
-                            remoteVideoTrack?.addSink(this)
-                        }
-                    },
-                    update = { view ->
-                        remoteVideoTrack?.addSink(view)
-                    },
-                    onRelease = { view ->
-                        try {
-                            remoteVideoTrack?.removeSink(view)
-                            view.release()
-                        } catch (e: Exception) {
-                            Log.e("MonitoringScreen", "Error releasing SurfaceViewRenderer: ${e.message}")
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Live Indicator Label
-                Text(
-                    text = "LIVE VIDEO",
-                    color = PureWhite,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 9.sp,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(6.dp)
-                        .background(DangerRed, RoundedCornerShape(2.dp))
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
-                )
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { 
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                    mapView.onDetach() 
+                }
             }
-        }
 
-        // Overlay UI
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            AndroidView(
+                factory = { 
+                    mapView.apply {
+                        setTileSource(TileSourceFactory.MAPNIK)
+                        setMultiTouchControls(true)
+                        controller.setZoom(19.0)
+                    }
+                },
+                update = { view ->
+                    if (locationHistoryPoints.isNotEmpty()) {
+                        if (polylineState.value == null) {
+                            polylineState.value = Polyline().apply {
+                                outlinePaint.color = android.graphics.Color.RED
+                                outlinePaint.strokeWidth = 10f
+                                view.overlays.add(this)
+                            }
+                        }
+                        polylineState.value?.setPoints(locationHistoryPoints)
+                    }
+
+                    lastLocation?.let { firePoint ->
+                        val osmPoint = GeoPoint(firePoint.latitude, firePoint.longitude)
+                        if (markerState.value == null) {
+                            markerState.value = Marker(view).apply {
+                                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                                title = displayName.ifBlank { "LAST KNOWN LOCATION" }
+                                icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_mylocation)
+                                view.overlays.add(this)
+                            }
+                        }
+                        markerState.value?.position = osmPoint
+                        view.controller.animateTo(osmPoint)
+                        view.invalidate()
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Overlay UI
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -474,6 +427,21 @@ fun MonitoringScreen(
             }
 
             Spacer(modifier = Modifier.weight(1f))
+
+            if (remoteVideoTrack != null) {
+                Button(
+                    onClick = { showVideoFeedScreen = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                ) {
+                    Icon(Icons.Default.Videocam, contentDescription = null, tint = Black, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("📹 CHECK LIVE VIDEO STREAM", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -568,6 +536,7 @@ fun MonitoringScreen(
             }
         }
     }
+}
 }
 
 @Composable
