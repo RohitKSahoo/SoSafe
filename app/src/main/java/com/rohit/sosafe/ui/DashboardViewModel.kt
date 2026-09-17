@@ -157,9 +157,8 @@ class DashboardViewModel(
 
                 _rawContacts.value = contacts
 
-                if (RoleManager.isGuardian()) {
-                    startSessionDiscovery(contactCodes)
-                }
+                // Always start session discovery regardless of mode so incoming alerts are universal
+                startSessionDiscovery(contactCodes)
             }
         } catch (e: Exception) {
             Log.e("SOS_AUDIT", "Error fetching user contacts: ${e.message}")
@@ -287,12 +286,13 @@ class DashboardViewModel(
 
     private fun fetchActiveSessions(contactIds: List<String>) {
         try {
+            val myCode = userManager.getUserCodeSync() ?: ""
             val rows = SupabaseApi.select("sessions", "status=eq.ACTIVE")
             val list = mutableListOf<SosSession>()
             for (i in 0 until rows.length()) {
                 val obj = rows.getJSONObject(i)
                 val senderId = obj.optString("sender_id")
-                if (senderId in contactIds) {
+                if (senderId != myCode && senderId in contactIds) {
                     val lat = obj.optDouble("last_latitude", Double.NaN)
                     val lng = obj.optDouble("last_longitude", Double.NaN)
                     val geoPoint = if (!lat.isNaN() && !lng.isNaN()) {

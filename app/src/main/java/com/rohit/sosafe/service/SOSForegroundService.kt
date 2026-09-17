@@ -139,11 +139,7 @@ class SOSForegroundService : Service() {
                 stopEmergencyMode()
             }
             else -> {
-                if (RoleManager.isSender()) {
-                    startGuardianMode()
-                } else if (RoleManager.isGuardian()) {
-                    startGuardianSessionDiscovery()
-                }
+                startUniversalMonitoring()
             }
         }
         return START_STICKY
@@ -153,6 +149,24 @@ class SOSForegroundService : Service() {
         if (notifiedSessions.contains(sessionId)) return
         notifiedSessions.add(sessionId)
         
+        // Prevent self-alert if this session was triggered by the current user
+        val myCode = userManager.getUserCodeSync() ?: ""
+        if (senderId == myCode) {
+            Log.d(AUDIT_TAG, "IGNORING_SELF_ALERT: Session $sessionId belongs to self ($myCode)")
+            return
+        }
+
+        // If this device is actively broadcasting an emergency, post a high-priority banner without interrupting camera/mic broadcast
+        if (isEmergencyActive) {
+            Log.w(AUDIT_TAG, "CONCURRENT_EMERGENCY: Local device is actively broadcasting. Posting banner notification.")
+            val displayName = contactNames[senderId] ?: senderName
+            val notification = createFullScreenNotification(sessionId, senderId, displayName)
+            val alertNotificationId = sessionId.hashCode()
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(alertNotificationId, notification)
+            return
+        }
+
         acquireWakeLock()
         
         // Use custom name if available in our local cache
@@ -195,27 +209,28 @@ class SOSForegroundService : Service() {
         }
     }
 
-    private fun startGuardianMode() {
-        val notification = createNotification("SoSafe Protection Active", "Monitoring for SOS triggers...")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, 
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-    }
-
     private var userRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
     private var sessionsRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
 
-    private fun startGuardianSessionDiscovery() {
+    private fun startUniversalMonitoring() {
         val myCode = userManager.getUserCodeSync() ?: return
 
         isSessionDiscoveryActive = true
         ServiceState.setGuardianActive(true)
 
-        val notification = createNotification("SoSafe Guardian Active", "Monitoring for emergency sessions...")
-        startForeground(NOTIFICATION_ID, notification)
+        val (title, content) = if (RoleManager.isSender()) {
+            Pair("SoSafe Protection Active", "Monitoring for SOS triggers & alerts...")
+        } else {
+            Pair("SoSafe Guardian Active", "Monitoring for emergency sessions...")
+        }
+
+        val notification = createNotification(title, content)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && RoleManager.isSender()) {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, 
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
 
         userRealtimeService?.stop()
 
@@ -269,6 +284,7 @@ class SOSForegroundService : Service() {
 
         Log.d(AUDIT_TAG, "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
 
+        val myCode = userManager.getUserCodeSync() ?: ""
         discoveryPollingJob = serviceScope.launch(Dispatchers.IO) {
             while (isSessionDiscoveryActive) {
                 try {
@@ -278,7 +294,7 @@ class SOSForegroundService : Service() {
                         val obj = rows.getJSONObject(i)
                         val sId = obj.optString("session_id")
                         val senderId = obj.optString("sender_id")
-                        if (senderId in contacts) {
+                        if (senderId != myCode && senderId in contacts) {
                             activeSessionIds.add(sId)
                             triggerSosIncomingAlert(
                                 sId,
@@ -311,7 +327,7 @@ class SOSForegroundService : Service() {
             val senderId = record.optString("sender_id")
             val status = record.optString("status")
 
-            if (senderId in contacts) {
+            if (senderId != myCode && senderId in contacts) {
                 if (type == "INSERT" || type == "UPDATE") {
                     if (status == SoSafeContract.Status.ACTIVE) {
                         triggerSosIncomingAlert(
@@ -499,7 +515,7 @@ class SOSForegroundService : Service() {
             }
         }
         
-        startGuardianMode()
+        startUniversalMonitoring()
     }
 
     @SuppressLint("MissingPermission")
@@ -682,10 +698,8 @@ class SOSForegroundService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.d(AUDIT_TAG, "SERVICE_TASK_REMOVED: Task swiped from recents. Ensuring guardian monitoring continues...")
-        if (RoleManager.isGuardian()) {
-            startGuardianSessionDiscovery()
-        }
+        Log.d(AUDIT_TAG, "SERVICE_TASK_REMOVED: Task swiped from recents. Ensuring universal monitoring continues...")
+        startUniversalMonitoring()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
