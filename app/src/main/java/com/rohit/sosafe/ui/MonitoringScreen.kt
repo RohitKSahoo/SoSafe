@@ -137,12 +137,16 @@ fun MonitoringScreen(
         }
     }
 
+    val userManager = remember { com.rohit.sosafe.data.UserManager(context) }
+    val myUserCode = remember { userManager.getUserCodeSync() ?: "guardian_${System.currentTimeMillis()}" }
+
     val webrtcManager = remember(session?.sessionId ?: playbackInfo?.sessionId) {
         if (session != null && !isPlayback) {
             WebRTCManager(
                 context = context,
                 sessionId = session.sessionId,
                 isReceiver = true, // Force use of Media Stream for dual speakers
+                guardianId = myUserCode,
                 onConnectionStateChange = { newState ->
                     webrtcState = newState
                     if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
