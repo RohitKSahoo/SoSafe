@@ -518,8 +518,13 @@ fun DashboardScreen(
                                     SenderDashboard(
                                         state = state,
                                         onContactClick = { contact ->
-                                            viewModel.loadRecordingsForUser(contact.id)
-                                            contactForHistory = contact
+                                            if (contact.status == ContactStatus.EMERGENCY && contact.activeSession != null) {
+                                                selectedMonitoringSession = contact.activeSession
+                                                showMonitoringScreen = true
+                                            } else {
+                                                viewModel.loadRecordingsForUser(contact.id)
+                                                contactForHistory = contact
+                                            }
                                         },
                                         onRenameClick = { contactToRename = it },
                                         onRemoveClick = { contactToRemove = it },
@@ -739,6 +744,45 @@ fun SenderDashboard(
     onStopSOS: () -> Unit,
     onShowQrClick: () -> Unit
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val notificationManager = remember(context) {
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    }
+    var hasDndAccess by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                notificationManager.isNotificationPolicyAccessGranted
+            } else {
+                true
+            }
+        )
+    }
+    var hasOverlayAccess by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else {
+                true
+            }
+        )
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    hasDndAccess = notificationManager.isNotificationPolicyAccessGranted
+                    hasOverlayAccess = Settings.canDrawOverlays(context)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         UserCodeCard(
             userCode = state.userCode,
@@ -746,6 +790,42 @@ fun SenderDashboard(
             onScanQrClick = null
         )
         Spacer(modifier = Modifier.height(24.dp))
+
+        if (!hasDndAccess && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            DndAccessCard(
+                onGrantClick = {
+                    try {
+                        val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Open Settings > Do Not Disturb Access", Toast.LENGTH_LONG).show()
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+
+        if (!hasOverlayAccess && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            OverlayAccessCard(
+                onGrantClick = {
+                    try {
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        try {
+                            val fallbackIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                            context.startActivity(fallbackIntent)
+                        } catch (e2: Exception) {
+                            Toast.makeText(context, "Open Settings > Display over other apps", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+        }
         
         if (state.isEmergency) {
             Card(
@@ -1066,19 +1146,38 @@ fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> U
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column {
-            Text(
-                text = "SOSAFE",
-                style = MaterialTheme.typography.headlineSmall,
-                color = PureWhite,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "SOSAFE",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontSize = 42.sp,
+                    color = PureWhite,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                if (appMode == AppMode.GUARDIAN) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = "Guardian Mode",
+                        tint = PureWhite,
+                        modifier = Modifier.size(34.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Sos,
+                        contentDescription = "Sender Mode",
+                        tint = DangerRed,
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
+            }
             Text(
                 text = if (appMode == AppMode.SENDER) {
                     if (isProtectionActive) "PROTECTION ENABLED" else "SYSTEM IDLE"
                 } else "GUARDIAN MODE ACTIVE",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (appMode == AppMode.SENDER && isProtectionActive) SuccessGreen else LightGrey
+                color = if (appMode == AppMode.SENDER && isProtectionActive) SuccessGreen else if (appMode == AppMode.GUARDIAN) SuccessGreen else LightGrey
             )
         }
 
@@ -1326,16 +1425,14 @@ fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit
                     )
                 }
             }
-            Text(
-                text = when(contact.status) {
-                    ContactStatus.EMERGENCY -> "!!! SOS ACTIVE !!!"
-                    ContactStatus.ONLINE -> "READY"
-                    else -> "IDLE"
-                }, 
-                style = MaterialTheme.typography.labelSmall, 
-                color = if (isEmergency) DangerRed else if (contact.status == ContactStatus.ONLINE) SuccessGreen else LightGrey,
-                fontWeight = if (isEmergency) FontWeight.Bold else FontWeight.Normal
-            )
+            if (isEmergency) {
+                Text(
+                    text = "!!! SOS ACTIVE !!!",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DangerRed,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
         
         if (isEmergency) {
