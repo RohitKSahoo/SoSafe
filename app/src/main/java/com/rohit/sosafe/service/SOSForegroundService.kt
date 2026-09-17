@@ -40,6 +40,7 @@ import com.rohit.sosafe.utils.ServiceState
 import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import com.rohit.sosafe.utils.SirenPlayer
 import com.rohit.sosafe.data.supabase.SupabaseApi
 import java.io.File
 
@@ -54,6 +55,8 @@ class SOSForegroundService : Service() {
     private var sessionId: String = ""
     private var audioSequence = 0
     private var lastKnownLocation: GeoPoint? = null
+    private var isSessionDiscoveryActive = false
+    private var discoveryPollingJob: Job? = null
     
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -114,6 +117,8 @@ class SOSForegroundService : Service() {
             sosTriggerManager = SOSTriggerManager(this)
             sosTriggerManager?.startDetection()
             ServiceState.setGuardianActive(true)
+        } else if (RoleManager.isGuardian()) {
+            ServiceState.setGuardianActive(true)
         }
     }
 
@@ -153,6 +158,9 @@ class SOSForegroundService : Service() {
         // Use custom name if available in our local cache
         val displayName = contactNames[senderId] ?: senderName
         
+        // Immediately start continuous looping siren & vibration via SirenPlayer
+        SirenPlayer.start(this)
+
         val notification = createFullScreenNotification(sessionId, senderId, displayName)
         
         val alertNotificationId = sessionId.hashCode()
@@ -164,9 +172,13 @@ class SOSForegroundService : Service() {
                 putExtra("sessionId", sessionId)
                 putExtra("senderId", senderId)
                 putExtra("senderName", displayName)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or 
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or 
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             }
             startActivity(launchIntent)
+            Log.d(AUDIT_TAG, "DIRECT_LAUNCH_TRIGGERED: SOSIncomingActivity launch requested.")
         } catch (e: Exception) {
             Log.w(AUDIT_TAG, "Direct launch from service skipped/failed: ${e.message}")
         }
@@ -198,6 +210,9 @@ class SOSForegroundService : Service() {
 
     private fun startGuardianSessionDiscovery() {
         val myCode = userManager.getUserCodeSync() ?: return
+
+        isSessionDiscoveryActive = true
+        ServiceState.setGuardianActive(true)
 
         val notification = createNotification("SoSafe Guardian Active", "Monitoring for emergency sessions...")
         startForeground(NOTIFICATION_ID, notification)
@@ -245,6 +260,8 @@ class SOSForegroundService : Service() {
 
     private fun updateSosAlertListener(contacts: List<String>) {
         sessionsRealtimeService?.stop()
+        discoveryPollingJob?.cancel()
+
         if (contacts.isEmpty()) {
             Log.d(AUDIT_TAG, "No contacts to monitor in service.")
             return
@@ -252,8 +269,8 @@ class SOSForegroundService : Service() {
 
         Log.d(AUDIT_TAG, "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
 
-        serviceScope.launch(Dispatchers.IO) {
-            while (ServiceState.isGuardianActive.value || isEmergencyActive) {
+        discoveryPollingJob = serviceScope.launch(Dispatchers.IO) {
+            while (isSessionDiscoveryActive) {
                 try {
                     val rows = SupabaseApi.select("sessions", "status=eq.ACTIVE")
                     val activeSessionIds = mutableSetOf<String>()
@@ -278,6 +295,9 @@ class SOSForegroundService : Service() {
                             notificationManager.cancel(eId.hashCode())
                         }
                         notifiedSessions.removeAll(endedSessions.toSet())
+                        if (notifiedSessions.isEmpty()) {
+                            SirenPlayer.stop(this@SOSForegroundService)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(AUDIT_TAG, "SERVICE_POLL_ERROR: ${e.message}")
@@ -303,6 +323,9 @@ class SOSForegroundService : Service() {
                         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                         notificationManager.cancel(sId.hashCode())
                         notifiedSessions.remove(sId)
+                        if (notifiedSessions.isEmpty()) {
+                            SirenPlayer.stop(this@SOSForegroundService)
+                        }
                     }
                 }
             }
@@ -635,6 +658,14 @@ class SOSForegroundService : Service() {
             }
         }
         
+        isSessionDiscoveryActive = false
+        discoveryPollingJob?.cancel()
+        userRealtimeService?.stop()
+        sessionsRealtimeService?.stop()
+        SirenPlayer.stop(this)
+        ServiceState.setGuardianActive(false)
+        ServiceState.setEmergencyActive(false)
+
         sosTriggerManager?.stopDetection()
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
         webrtcManager?.stop()
@@ -647,6 +678,14 @@ class SOSForegroundService : Service() {
         
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.d(AUDIT_TAG, "SERVICE_TASK_REMOVED: Task swiped from recents. Ensuring guardian monitoring continues...")
+        if (RoleManager.isGuardian()) {
+            startGuardianSessionDiscovery()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

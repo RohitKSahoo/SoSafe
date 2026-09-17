@@ -840,12 +840,22 @@ fun GuardianDashboard(
             }
         )
     }
+    var hasOverlayAccess by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else {
+                true
+            }
+        )
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     hasDndAccess = notificationManager.isNotificationPolicyAccessGranted
+                    hasOverlayAccess = Settings.canDrawOverlays(context)
                 }
             }
         }
@@ -871,6 +881,28 @@ fun GuardianDashboard(
                         context.startActivity(intent)
                     } catch (e: Exception) {
                         Toast.makeText(context, "Open Settings > Do Not Disturb Access", Toast.LENGTH_LONG).show()
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+
+        if (!hasOverlayAccess && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            OverlayAccessCard(
+                onGrantClick = {
+                    try {
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        try {
+                            val fallbackIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                            context.startActivity(fallbackIntent)
+                        } catch (e2: Exception) {
+                            Toast.makeText(context, "Open Settings > Display over other apps", Toast.LENGTH_LONG).show()
+                        }
                     }
                 }
             )
@@ -971,6 +1003,54 @@ fun DndAccessCard(
             shape = RoundedCornerShape(4.dp)
         ) {
             Text("ENABLE DND OVERRIDE", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+fun OverlayAccessCard(
+    onGrantClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(DarkCard)
+            .border(1.dp, DangerRed.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .padding(20.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = DangerRed,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = "APPEAR ON TOP (OVERLAY)",
+                style = MaterialTheme.typography.titleMedium,
+                color = PureWhite,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Text(
+            text = "To automatically launch the emergency monitor screen immediately when an SOS arrives (even when phone is unlocked, in other apps, or cleared from recents), enable Appear on Top permission.",
+            style = MaterialTheme.typography.bodySmall,
+            color = LightGrey
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = onGrantClick,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
+            shape = RoundedCornerShape(4.dp)
+        ) {
+            Text("ENABLE APPEAR ON TOP", fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }
     }
 }
