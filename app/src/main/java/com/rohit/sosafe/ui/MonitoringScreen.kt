@@ -507,7 +507,7 @@ fun MonitoringScreen(
                 ) {
                     Icon(Icons.Default.Videocam, contentDescription = null, tint = Black, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("📹 CHECK LIVE VIDEO STREAM", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("CHECK LIVE VIDEO STREAM", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
 

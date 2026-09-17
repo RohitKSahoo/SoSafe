@@ -1,8 +1,15 @@
 package com.rohit.sosafe.ui
 
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -819,6 +826,35 @@ fun GuardianDashboard(
     onRenameClick: (Contact) -> Unit,
     onRemoveClick: (Contact) -> Unit
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val notificationManager = remember(context) {
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    }
+    var hasDndAccess by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                notificationManager.isNotificationPolicyAccessGranted
+            } else {
+                true
+            }
+        )
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    hasDndAccess = notificationManager.isNotificationPolicyAccessGranted
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         UserCodeCard(
             userCode = state.userCode,
@@ -826,6 +862,20 @@ fun GuardianDashboard(
             onScanQrClick = onScanQrClick
         )
         Spacer(modifier = Modifier.height(24.dp))
+
+        if (!hasDndAccess && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            DndAccessCard(
+                onGrantClick = {
+                    try {
+                        val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Open Settings > Do Not Disturb Access", Toast.LENGTH_LONG).show()
+                    }
+                }
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+        }
 
         Text("SERVICE STATUS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
         Spacer(modifier = Modifier.height(12.dp))
@@ -874,6 +924,54 @@ fun GuardianDashboard(
             onRenameClick = onRenameClick,
             onRemoveClick = onRemoveClick
         )
+    }
+}
+
+@Composable
+fun DndAccessCard(
+    onGrantClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .background(DarkCard)
+            .border(1.dp, DangerRed.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .padding(20.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.NotificationsActive,
+                contentDescription = null,
+                tint = DangerRed,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = "ALLOW SIREN IN DND MODE",
+                style = MaterialTheme.typography.titleMedium,
+                color = PureWhite,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Text(
+            text = "Emergency SOS alerts cannot break through Do Not Disturb or Silent mode unless granted system access. Tap below to enable siren override.",
+            style = MaterialTheme.typography.bodySmall,
+            color = LightGrey
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = onGrantClick,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
+            shape = RoundedCornerShape(4.dp)
+        ) {
+            Text("ENABLE DND OVERRIDE", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        }
     }
 }
 

@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -45,7 +46,7 @@ import java.io.File
 class SOSForegroundService : Service() {
 
     private val CHANNEL_ID = "SOS_SERVICE_CHANNEL"
-    private val GUARDIAN_CHANNEL_ID = "SOS_GUARDIAN_CHANNEL"
+    private val GUARDIAN_CHANNEL_ID = "SOS_GUARDIAN_CHANNEL_V2"
     private val NOTIFICATION_ID = 1
     private val AUDIT_TAG = "SOS_AUDIT"
     private var sosTriggerManager: SOSTriggerManager? = null
@@ -157,6 +158,18 @@ class SOSForegroundService : Service() {
         val alertNotificationId = sessionId.hashCode()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(alertNotificationId, notification)
+        
+        try {
+            val launchIntent = Intent(this, SOSIncomingActivity::class.java).apply {
+                putExtra("sessionId", sessionId)
+                putExtra("senderId", senderId)
+                putExtra("senderName", displayName)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            startActivity(launchIntent)
+        } catch (e: Exception) {
+            Log.w(AUDIT_TAG, "Direct launch from service skipped/failed: ${e.message}")
+        }
         
         ServiceState.setGuardianActive(true)
         Log.d(AUDIT_TAG, "ALERT_TRIGGERED: Session $sessionId from $senderId")
@@ -317,13 +330,13 @@ class SOSForegroundService : Service() {
             .setContentTitle("INCOMING SOS ALERT")
             .setContentText("$senderName is in danger!")
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(mainPendingIntent)
             .setVibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000))
-            .setSound(soundUri)
+            .setSound(soundUri, AudioManager.STREAM_ALARM)
             .build()
     }
 
@@ -657,12 +670,14 @@ class SOSForegroundService : Service() {
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setUsage(AudioAttributes.USAGE_ALARM)
+                .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
                 .build()
 
             val guardianChannel = NotificationChannel(GUARDIAN_CHANNEL_ID, "Emergency Alerts", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Critical alerts for incoming SOS calls"
                 enableLights(true)
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
                 setBypassDnd(true)
                 setSound(soundUri, audioAttributes)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC

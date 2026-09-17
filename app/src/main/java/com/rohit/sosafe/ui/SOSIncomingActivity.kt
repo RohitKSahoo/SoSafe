@@ -6,11 +6,16 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -28,6 +33,8 @@ import com.rohit.sosafe.ui.theme.SoSafeTheme
 class SOSIncomingActivity : ComponentActivity() {
 
     private var mediaPlayer: MediaPlayer? = null
+    private var fallbackRingtone: Ringtone? = null
+    private var vibrator: Vibrator? = null
     private val handler = Handler(Looper.getMainLooper())
     private var sessionId: String = ""
     private var isSirenPlaying by mutableStateOf(false)
@@ -84,36 +91,127 @@ class SOSIncomingActivity : ComponentActivity() {
 
     private fun startSiren() {
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        
-        // Force Alarm Volume to Max
-        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-        audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+        // Safely attempt to maximize alarm volume without crashing in DND mode
         try {
+            val canChangePolicy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                notificationManager.isNotificationPolicyAccessGranted
+            } else {
+                true
+            }
+
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+            if (canChangePolicy) {
+                audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
+                Log.d("SOS_AUDIT", "ALARM_VOLUME_SET: Max volume applied via policy access.")
+            } else {
+                // If policy access is not granted, check if alarm is muted or low
+                val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+                if (currentVolume < maxVolume / 2) {
+                    try {
+                        audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
+                    } catch (se: SecurityException) {
+                        Log.w("SOS_AUDIT", "DND policy restriction prevented setStreamVolume: ${se.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SOS_AUDIT", "Could not adjust alarm stream volume: ${e.message}")
+        }
+
+        // Start Hardware Vibration in parallel
+        startVibration()
+
+        // Initialize and start MediaPlayer for Siren
+        try {
+            val soundUri = Uri.parse("android.resource://$packageName/raw/siren")
             mediaPlayer = MediaPlayer().apply {
-                val soundUri = Uri.parse("android.resource://$packageName/raw/siren")
                 setDataSource(applicationContext, soundUri)
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_ALARM)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
                         .build()
                 )
                 isLooping = true
+                setVolume(1.0f, 1.0f)
                 prepare()
                 start()
             }
             isSirenPlaying = true
-            Log.d("SOS_AUDIT", "SIREN_STARTED: Audio stream alarm active.")
+            Log.d("SOS_AUDIT", "SIREN_STARTED: Audio stream alarm active with audibility enforced.")
+        } catch (e: Exception) {
+            Log.e("SOS_AUDIT", "SIREN_START_FAILED: ${e.message}, falling back to system alarm ringtone.")
+            playFallbackAlarm()
+        }
+    }
+
+    private fun playFallbackAlarm() {
+        try {
+            var alertUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            if (alertUri == null) {
+                alertUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            }
+            fallbackRingtone = RingtoneManager.getRingtone(applicationContext, alertUri)?.apply {
+                audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
+                    .build()
+                play()
+            }
+            isSirenPlaying = true
+            Log.d("SOS_AUDIT", "FALLBACK_ALARM_STARTED: Ringtone playing.")
         } catch (e: Exception) {
             isSirenPlaying = false
-            Log.e("SOS_AUDIT", "SIREN_START_FAILED: ${e.message}")
+            Log.e("SOS_AUDIT", "FALLBACK_ALARM_FAILED: ${e.message}")
+        }
+    }
+
+    private fun startVibration() {
+        try {
+            vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+
+            val pattern = longArrayOf(0, 800, 400, 800, 400, 800)
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
+                .build()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = VibrationEffect.createWaveform(pattern, 0) // repeat indefinitely
+                vibrator?.vibrate(effect, audioAttributes)
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(pattern, 0)
+            }
+        } catch (e: Exception) {
+            Log.w("SOS_AUDIT", "Vibration start failed: ${e.message}")
+        }
+    }
+
+    private fun stopVibration() {
+        try {
+            vibrator?.cancel()
+            vibrator = null
+        } catch (e: Exception) {
+            Log.w("SOS_AUDIT", "Vibration stop failed: ${e.message}")
         }
     }
 
     private fun stopSiren() {
         try {
             cancelNotification()
+            
             mediaPlayer?.let {
                 if (it.isPlaying) {
                     it.stop()
@@ -121,8 +219,18 @@ class SOSIncomingActivity : ComponentActivity() {
                 it.release()
             }
             mediaPlayer = null
+
+            fallbackRingtone?.let {
+                if (it.isPlaying) {
+                    it.stop()
+                }
+            }
+            fallbackRingtone = null
+
+            stopVibration()
+
             isSirenPlaying = false
-            Log.d("SOS_AUDIT", "SIREN_STOPPED: Resource released.")
+            Log.d("SOS_AUDIT", "SIREN_STOPPED: All audio and vibration resources released.")
         } catch (e: Exception) {
             isSirenPlaying = false
             Log.e("SOS_AUDIT", "SIREN_STOP_FAILED: ${e.message}")
