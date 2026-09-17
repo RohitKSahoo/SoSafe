@@ -20,6 +20,7 @@ import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
@@ -75,6 +76,8 @@ fun MonitoringScreen(
     playbackInfo: RecordingInfo? = null,
     displayName: String = "",
     initialDelayMillis: Long = 0L,
+    isSirenActive: Boolean = false,
+    onSilenceSiren: (() -> Unit)? = null,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -339,6 +342,7 @@ fun MonitoringScreen(
         if (sessionState is SessionState.ENDED) {
             remoteVideoTrack = null
             showVideoFeedScreen = false
+            onSilenceSiren?.invoke()
         }
     }
 
@@ -463,6 +467,34 @@ fun MonitoringScreen(
             }
 
             Spacer(modifier = Modifier.weight(1f))
+
+            if (isSirenActive && onSilenceSiren != null) {
+                Button(
+                    onClick = onSilenceSiren,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DangerRed,
+                        contentColor = PureWhite
+                    ),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.VolumeOff,
+                        contentDescription = "Silence Siren",
+                        tint = PureWhite,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "SILENCE SIREN ALERT",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+            }
 
             if (!isPlayback && sessionState is SessionState.ACTIVE && isWebRTCActive && remoteVideoTrack != null) {
                 Button(

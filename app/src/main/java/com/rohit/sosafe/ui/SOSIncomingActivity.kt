@@ -18,6 +18,9 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.SoSafeTheme
@@ -27,6 +30,7 @@ class SOSIncomingActivity : ComponentActivity() {
     private var mediaPlayer: MediaPlayer? = null
     private val handler = Handler(Looper.getMainLooper())
     private var sessionId: String = ""
+    private var isSirenPlaying by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,8 +61,11 @@ class SOSIncomingActivity : ComponentActivity() {
                         session = session,
                         displayName = senderName, // Pass custom name from notification
                         initialDelayMillis = 3000L,
+                        isSirenActive = isSirenPlaying,
+                        onSilenceSiren = { stopSiren() },
                         onClose = { 
                             Log.d("SOS_AUDIT", "MONITORING_CLOSED: Closing activity.")
+                            stopSiren()
                             finish() 
                         }
                     )
@@ -96,14 +103,17 @@ class SOSIncomingActivity : ComponentActivity() {
                 prepare()
                 start()
             }
+            isSirenPlaying = true
             Log.d("SOS_AUDIT", "SIREN_STARTED: Audio stream alarm active.")
         } catch (e: Exception) {
+            isSirenPlaying = false
             Log.e("SOS_AUDIT", "SIREN_START_FAILED: ${e.message}")
         }
     }
 
     private fun stopSiren() {
         try {
+            cancelNotification()
             mediaPlayer?.let {
                 if (it.isPlaying) {
                     it.stop()
@@ -111,8 +121,10 @@ class SOSIncomingActivity : ComponentActivity() {
                 it.release()
             }
             mediaPlayer = null
+            isSirenPlaying = false
             Log.d("SOS_AUDIT", "SIREN_STOPPED: Resource released.")
         } catch (e: Exception) {
+            isSirenPlaying = false
             Log.e("SOS_AUDIT", "SIREN_STOP_FAILED: ${e.message}")
         }
     }
