@@ -1149,25 +1149,26 @@ fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> U
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "SOSAFE",
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontSize = 34.sp,
                     color = PureWhite,
                     fontWeight = FontWeight.Black,
-                    letterSpacing = 1.sp
+                    letterSpacing = 1.5.sp
                 )
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(12.dp))
                 if (appMode == AppMode.GUARDIAN) {
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = "Guardian Mode",
                         tint = PureWhite,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(28.dp)
                     )
                 } else {
                     Icon(
                         imageVector = Icons.Default.Sos,
                         contentDescription = "Sender Mode",
                         tint = DangerRed,
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier.size(30.dp)
                     )
                 }
             }
