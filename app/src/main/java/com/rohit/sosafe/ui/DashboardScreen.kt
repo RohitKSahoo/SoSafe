@@ -1150,10 +1150,10 @@ fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> U
                 Text(
                     text = "SOSAFE",
                     style = MaterialTheme.typography.headlineLarge,
-                    fontSize = 34.sp,
+                    fontSize = 42.sp,
                     color = PureWhite,
                     fontWeight = FontWeight.Black,
-                    letterSpacing = 1.5.sp
+                    letterSpacing = 2.sp
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 if (appMode == AppMode.GUARDIAN) {
@@ -1161,14 +1161,14 @@ fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> U
                         imageVector = Icons.Default.Shield,
                         contentDescription = "Guardian Mode",
                         tint = PureWhite,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(34.dp)
                     )
                 } else {
                     Icon(
                         imageVector = Icons.Default.Sos,
                         contentDescription = "Sender Mode",
                         tint = DangerRed,
-                        modifier = Modifier.size(30.dp)
+                        modifier = Modifier.size(36.dp)
                     )
                 }
             }
