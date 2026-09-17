@@ -7,9 +7,21 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.sp
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MyLocation
@@ -32,6 +44,7 @@ import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
+import androidx.activity.compose.BackHandler
 import com.rohit.sosafe.architecture.AudioPlaybackController
 import com.rohit.sosafe.architecture.SessionController
 import com.rohit.sosafe.architecture.SessionState
@@ -42,6 +55,7 @@ import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -62,6 +76,8 @@ fun MonitoringScreen(
     playbackInfo: RecordingInfo? = null,
     displayName: String = "",
     initialDelayMillis: Long = 0L,
+    isSirenActive: Boolean = false,
+    onSilenceSiren: (() -> Unit)? = null,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -69,6 +85,10 @@ fun MonitoringScreen(
     val recordingManager = remember { RecordingManager(context) }
     
     val isPlayback = playbackInfo != null
+    
+    BackHandler {
+        onClose()
+    }
     
     // NEW ARCHITECTURE: Controllers
     val sessionController = remember(session?.sessionId) {
@@ -92,15 +112,17 @@ fun MonitoringScreen(
     var lastLocation by remember { mutableStateOf(playbackInfo?.lastLocation ?: session?.lastLocation) }
 
     // WebRTC State
-    var webrtcState by remember { mutableStateOf(PeerConnection.PeerConnectionState.NEW) }
+    var webrtcState by remember(session?.sessionId) { mutableStateOf(PeerConnection.PeerConnectionState.NEW) }
+    var remoteVideoTrack by remember(session?.sessionId) { mutableStateOf<org.webrtc.VideoTrack?>(null) }
+    var pipOffsetX by remember { mutableFloatStateOf(0f) }
+    var pipOffsetY by remember { mutableFloatStateOf(0f) }
     val isWebRTCActive = webrtcState == PeerConnection.PeerConnectionState.CONNECTED
 
     // Helper to force speakerphone routing
     val forceSpeakerphone = {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         try {
-            // MODE_NORMAL is essential for dual-speaker media playback
-            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val devices = audioManager.availableCommunicationDevices
@@ -115,12 +137,16 @@ fun MonitoringScreen(
         }
     }
 
+    val userManager = remember { com.rohit.sosafe.data.UserManager(context) }
+    val myUserCode = remember { userManager.getUserCodeSync() ?: "guardian_${System.currentTimeMillis()}" }
+
     val webrtcManager = remember(session?.sessionId ?: playbackInfo?.sessionId) {
         if (session != null && !isPlayback) {
             WebRTCManager(
                 context = context,
                 sessionId = session.sessionId,
                 isReceiver = true, // Force use of Media Stream for dual speakers
+                guardianId = myUserCode,
                 onConnectionStateChange = { newState ->
                     webrtcState = newState
                     if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
@@ -130,6 +156,9 @@ fun MonitoringScreen(
                 onAudioTrackReceived = { track ->
                     track.setEnabled(true)
                     forceSpeakerphone()
+                },
+                onVideoTrackReceived = { videoTrack ->
+                    remoteVideoTrack = videoTrack
                 }
             )
         } else null
@@ -143,6 +172,8 @@ fun MonitoringScreen(
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val maxMusicVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVolume, 0)
+            val maxVoiceVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVoiceVolume, 0)
             
             sessionController?.startMonitoring()
             webrtcManager?.startReceiver()
@@ -242,12 +273,29 @@ fun MonitoringScreen(
             try {
                 val rows = SupabaseApi.select("audio_chunks", "session_id=eq.$sId&order=sequence.asc")
                 var maxSeq = -1
+                var latestChunk: AudioChunk? = null
                 for (i in 0 until rows.length()) {
-                    val seq = rows.getJSONObject(i).optInt("sequence", -1)
-                    if (seq > maxSeq) maxSeq = seq
+                    val obj = rows.getJSONObject(i)
+                    val seq = obj.optInt("sequence", -1)
+                    if (seq > maxSeq) {
+                        maxSeq = seq
+                        val fileUrl = obj.optString("file_url")
+                        val duration = obj.optInt("duration", 3)
+                        val createdAt = obj.optLong("created_at", System.currentTimeMillis())
+                        latestChunk = AudioChunk(fileUrl = fileUrl, sequence = seq, duration = duration, createdAt = createdAt)
+                    }
                 }
                 maxInitialSequence = maxSeq
                 isInitialSnapshotLoaded = true
+
+                if (latestChunk != null && !isWebRTCActive) {
+                    val age = System.currentTimeMillis() - ((latestChunk.createdAt as? Long) ?: 0L)
+                    if (age < 12000L) {
+                        withContext(Dispatchers.Main) {
+                            playbackController?.enqueue(latestChunk)
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("MonitoringScreen", "Error fetching initial chunks: ${e.message}")
             }
@@ -292,70 +340,93 @@ fun MonitoringScreen(
         }
     }
 
-    // UI Rendering
-    Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
-    
-    Box(modifier = Modifier.fillMaxSize().background(Black).systemBarsPadding()) {
-        val mapView = remember { MapView(context) }
-        val markerState = remember { mutableStateOf<Marker?>(null) }
-        val polylineState = remember { mutableStateOf<Polyline?>(null) }
+    var showVideoFeedScreen by remember { mutableStateOf(false) }
 
-        val lifecycleOwner = LocalLifecycleOwner.current
-        DisposableEffect(lifecycleOwner) {
-            val observer = LifecycleEventObserver { _, event ->
-                when (event) {
-                    Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                    Lifecycle.Event.ON_PAUSE -> mapView.onPause()
-                    else -> {}
-                }
-            }
-            lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose { 
-                lifecycleOwner.lifecycle.removeObserver(observer)
-                mapView.onDetach() 
-            }
+    LaunchedEffect(sessionState) {
+        if (sessionState is SessionState.ENDED) {
+            remoteVideoTrack = null
+            showVideoFeedScreen = false
+            onSilenceSiren?.invoke()
         }
+    }
 
-        AndroidView(
-            factory = { 
-                mapView.apply {
-                    setTileSource(TileSourceFactory.MAPNIK)
-                    setMultiTouchControls(true)
-                    controller.setZoom(19.0)
-                }
-            },
-            update = { view ->
-                if (locationHistoryPoints.isNotEmpty()) {
-                    if (polylineState.value == null) {
-                        polylineState.value = Polyline().apply {
-                            outlinePaint.color = android.graphics.Color.RED
-                            outlinePaint.strokeWidth = 10f
-                            view.overlays.add(this)
-                        }
-                    }
-                    polylineState.value?.setPoints(locationHistoryPoints)
-                }
-
-                lastLocation?.let { firePoint ->
-                    val osmPoint = GeoPoint(firePoint.latitude, firePoint.longitude)
-                    if (markerState.value == null) {
-                        markerState.value = Marker(view).apply {
-                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                            title = displayName.ifBlank { "LAST KNOWN LOCATION" }
-                            icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_mylocation)
-                            view.overlays.add(this)
-                        }
-                    }
-                    markerState.value?.position = osmPoint
-                    view.controller.animateTo(osmPoint)
-                    view.invalidate()
-                }
-            },
-            modifier = Modifier.fillMaxSize()
+    if (showVideoFeedScreen) {
+        VideoFeedScreen(
+            videoTrack = remoteVideoTrack,
+            displayName = displayName,
+            onSwitchCamera = { webrtcManager?.switchCamera() },
+            onBack = { showVideoFeedScreen = false }
         )
+    } else {
+        // UI Rendering
+        Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+        
+        Box(modifier = Modifier.fillMaxSize().background(Black).systemBarsPadding()) {
+            val mapView = remember { MapView(context) }
+            val markerState = remember { mutableStateOf<Marker?>(null) }
+            val polylineState = remember { mutableStateOf<Polyline?>(null) }
 
-        // Overlay UI
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            val lifecycleOwner = LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                        Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                        else -> {}
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { 
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                    try {
+                        mapView.onPause()
+                        mapView.onDetach() 
+                    } catch (e: Exception) {
+                        Log.e("MonitoringScreen", "Error detaching mapView: ${e.message}")
+                    }
+                }
+            }
+
+            AndroidView(
+                factory = { 
+                    mapView.apply {
+                        setTileSource(TileSourceFactory.MAPNIK)
+                        setMultiTouchControls(true)
+                        controller.setZoom(19.0)
+                    }
+                },
+                update = { view ->
+                    if (locationHistoryPoints.isNotEmpty()) {
+                        if (polylineState.value == null) {
+                            polylineState.value = Polyline().apply {
+                                outlinePaint.color = android.graphics.Color.RED
+                                outlinePaint.strokeWidth = 10f
+                                view.overlays.add(this)
+                            }
+                        }
+                        polylineState.value?.setPoints(locationHistoryPoints)
+                    }
+
+                    lastLocation?.let { firePoint ->
+                        val osmPoint = GeoPoint(firePoint.latitude, firePoint.longitude)
+                        if (markerState.value == null) {
+                            markerState.value = Marker(view).apply {
+                                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                                title = displayName.ifBlank { "LAST KNOWN LOCATION" }
+                                icon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_mylocation)
+                                view.overlays.add(this)
+                            }
+                        }
+                        markerState.value?.position = osmPoint
+                        view.controller.animateTo(osmPoint)
+                        view.invalidate()
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Overlay UI
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -401,6 +472,49 @@ fun MonitoringScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
+            if (isSirenActive && onSilenceSiren != null) {
+                Button(
+                    onClick = onSilenceSiren,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DangerRed,
+                        contentColor = PureWhite
+                    ),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.VolumeOff,
+                        contentDescription = "Silence Siren",
+                        tint = PureWhite,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "SILENCE SIREN ALERT",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+            }
+
+            if (!isPlayback && sessionState is SessionState.ACTIVE && isWebRTCActive && remoteVideoTrack != null) {
+                Button(
+                    onClick = { showVideoFeedScreen = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                ) {
+                    Icon(Icons.Default.Videocam, contentDescription = null, tint = Black, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("CHECK LIVE VIDEO STREAM", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = DarkGrey.copy(alpha = 0.9f)),
@@ -422,11 +536,18 @@ fun MonitoringScreen(
                         session?.senderId != null -> "User ${session.senderId.take(4)} ($dateStr)"
                         else -> "SOS RECORDING ($dateStr)"
                     }
-                    Text(
-                        text = headerTitle, 
-                        color = PureWhite, 
-                        fontWeight = FontWeight.Bold
-                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = headerTitle, 
+                            color = PureWhite, 
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                     
                     Spacer(modifier = Modifier.height(8.dp))
                     
@@ -446,20 +567,53 @@ fun MonitoringScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    val stitchedFile = remember(sessionState) {
+                    var stitchedFile by remember { mutableStateOf<File?>(null) }
+                    var isFinalizingRecording by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(sessionState) {
                         if (sessionState is SessionState.ENDED) {
                             val senderId = session?.senderId ?: "GUARDIAN"
                             val sId = session?.sessionId ?: playbackInfo?.sessionId ?: ""
                             if (sId.isNotBlank()) {
-                                recordingManager.finalizeRecording(senderId, sId)
-                            } else null
-                        } else null
+                                isFinalizingRecording = true
+                                stitchedFile = withContext(Dispatchers.IO) {
+                                    try {
+                                        recordingManager.finalizeRecording(senderId, sId)
+                                    } catch (e: Exception) {
+                                        Log.e("MonitoringScreen", "Error finalizing recording: ${e.message}")
+                                        null
+                                    }
+                                }
+                                isFinalizingRecording = false
+                            }
+                        }
                     }
 
-                    if (isPlayback && playbackInfo != null) {
+                    if (playbackInfo != null) {
                         PlaybackPlayer(file = playbackInfo.file, senderDisplayName = displayName)
-                    } else if (sessionState is SessionState.ENDED && stitchedFile != null) {
-                        PlaybackPlayer(file = stitchedFile, senderDisplayName = displayName)
+                    } else if (sessionState is SessionState.ENDED) {
+                        val fileToPlay = stitchedFile
+                        if (fileToPlay != null) {
+                            PlaybackPlayer(file = fileToPlay, senderDisplayName = displayName)
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Black)
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = PureWhite, strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = if (isFinalizingRecording) "STITCHING RECORDING..." else "PREPARING AUDIO RECORDING...",
+                                    color = LightGrey,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     } else {
                         StatusPlayerUI(
                             sessionState = sessionState,
@@ -470,6 +624,7 @@ fun MonitoringScreen(
             }
         }
     }
+}
 }
 
 @Composable
@@ -509,27 +664,48 @@ fun StatusPlayerUI(
 @Composable
 fun PlaybackPlayer(file: File, senderDisplayName: String = "") {
     val context = LocalContext.current
-    val mediaPlayer = remember(file) { 
-        MediaPlayer().apply {
-            setDataSource(file.absolutePath)
-            prepare()
-        }
-    }
-    
     var isPlaying by remember { mutableStateOf(false) }
-    val duration by remember { mutableIntStateOf(mediaPlayer.duration) }
+    var duration by remember { mutableIntStateOf(0) }
     var position by remember { mutableIntStateOf(0) }
+    var isPrepared by remember { mutableStateOf(false) }
+
+    val mediaPlayer = remember(file) { MediaPlayer() }
 
     DisposableEffect(file) {
-        mediaPlayer.setOnCompletionListener { isPlaying = false }
+        try {
+            mediaPlayer.reset()
+            mediaPlayer.setDataSource(file.absolutePath)
+            mediaPlayer.setOnPreparedListener { mp ->
+                duration = mp.duration
+                isPrepared = true
+            }
+            mediaPlayer.setOnCompletionListener { 
+                isPlaying = false 
+            }
+            mediaPlayer.prepareAsync()
+        } catch (e: Exception) {
+            Log.e("PlaybackPlayer", "Error preparing media: ${e.message}")
+        }
+
         onDispose { 
-            mediaPlayer.release() 
+            try {
+                if (mediaPlayer.isPlaying) {
+                    mediaPlayer.stop()
+                }
+                mediaPlayer.release()
+            } catch (e: Exception) {
+                Log.e("PlaybackPlayer", "Error releasing media player: ${e.message}")
+            }
         }
     }
 
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
-            position = mediaPlayer.currentPosition
+            try {
+                if (isPrepared) {
+                    position = mediaPlayer.currentPosition
+                }
+            } catch (e: Exception) {}
             delay(200)
         }
     }

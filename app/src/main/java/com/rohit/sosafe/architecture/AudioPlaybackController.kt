@@ -37,7 +37,12 @@ class AudioPlaybackController(
             sessionState.collectLatest { state ->
                 when (state) {
                     is SessionState.ACTIVE -> {
-                        // Ready to play
+                        if (queue.isNotEmpty() && !isCurrentlyPlaying) {
+                            playNext()
+                        }
+                    }
+                    is SessionState.CONNECTING -> {
+                        // Allow buffering while connecting
                     }
                     else -> {
                         stopAndClear()
@@ -48,10 +53,11 @@ class AudioPlaybackController(
     }
 
     fun enqueue(chunk: AudioChunk) {
-        if (sessionState.value !is SessionState.ACTIVE) return
+        val currentState = sessionState.value
+        if (currentState !is SessionState.ACTIVE && currentState !is SessionState.CONNECTING) return
         
         queue.add(chunk)
-        if (!isCurrentlyPlaying) {
+        if (currentState is SessionState.ACTIVE && !isCurrentlyPlaying) {
             playNext()
         }
     }
@@ -114,15 +120,24 @@ class AudioPlaybackController(
     private fun stopAndClear() {
         Log.d(TAG, "Stopping playback and clearing queue.")
         queue.clear()
-        if (mediaPlayer.isPlaying) {
-            mediaPlayer.stop()
+        try {
+            if (mediaPlayer.isPlaying) {
+                mediaPlayer.stop()
+            }
+            mediaPlayer.reset()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in stopAndClear: ${e.message}")
         }
         isCurrentlyPlaying = false
     }
 
     fun release() {
         stopAndClear()
-        mediaPlayer.release()
+        try {
+            mediaPlayer.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in release: ${e.message}")
+        }
         scope.cancel()
     }
 }

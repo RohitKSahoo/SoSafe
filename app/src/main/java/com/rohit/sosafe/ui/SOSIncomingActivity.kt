@@ -3,14 +3,9 @@ package com.rohit.sosafe.ui
 import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioManager
-import android.media.MediaPlayer
-import android.net.Uri
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -18,14 +13,15 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import com.rohit.sosafe.data.contracts.SosSession
 import com.rohit.sosafe.ui.theme.SoSafeTheme
+import com.rohit.sosafe.utils.SirenPlayer
 
 class SOSIncomingActivity : ComponentActivity() {
 
-    private var mediaPlayer: MediaPlayer? = null
-    private val handler = Handler(Looper.getMainLooper())
     private var sessionId: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,11 +31,14 @@ class SOSIncomingActivity : ComponentActivity() {
         val senderId = intent.getStringExtra("senderId") ?: ""
         val senderName = intent.getStringExtra("senderName") ?: "Someone"
 
+        // Ensure lockscreen display and turn screen on
+        showOnLockScreen()
+
         // Cancel system notification banner so custom Activity takes control
         cancelNotification()
 
-        showOnLockScreen()
-        startSiren()
+        // Ensure siren is playing (SirenPlayer is idempotent)
+        SirenPlayer.start(this)
 
         val session = SosSession(
             sessionId = sessionId,
@@ -53,18 +52,33 @@ class SOSIncomingActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
+                    val isSirenPlayingState by SirenPlayer.isSirenPlaying.collectAsState()
                     MonitoringScreen(
                         session = session,
-                        displayName = senderName, // Pass custom name from notification
+                        displayName = senderName,
                         initialDelayMillis = 3000L,
+                        isSirenActive = isSirenPlayingState,
+                        onSilenceSiren = { 
+                            SirenPlayer.stop(this@SOSIncomingActivity)
+                            cancelNotification()
+                        },
                         onClose = { 
                             Log.d("SOS_AUDIT", "MONITORING_CLOSED: Closing activity.")
+                            SirenPlayer.stop(this@SOSIncomingActivity)
+                            cancelNotification()
                             finish() 
                         }
                     )
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        showOnLockScreen()
+        SirenPlayer.start(this)
     }
 
     private fun cancelNotification() {
@@ -75,56 +89,11 @@ class SOSIncomingActivity : ComponentActivity() {
         }
     }
 
-    private fun startSiren() {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        
-        // Force Alarm Volume to Max
-        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-        audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
-
-        try {
-            mediaPlayer = MediaPlayer().apply {
-                val soundUri = Uri.parse("android.resource://$packageName/raw/siren")
-                setDataSource(applicationContext, soundUri)
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
-                isLooping = true
-                prepare()
-                start()
-            }
-            Log.d("SOS_AUDIT", "SIREN_STARTED: Audio stream alarm active.")
-        } catch (e: Exception) {
-            Log.e("SOS_AUDIT", "SIREN_START_FAILED: ${e.message}")
-        }
-    }
-
-    private fun stopSiren() {
-        try {
-            mediaPlayer?.let {
-                if (it.isPlaying) {
-                    it.stop()
-                }
-                it.release()
-            }
-            mediaPlayer = null
-            Log.d("SOS_AUDIT", "SIREN_STOPPED: Resource released.")
-        } catch (e: Exception) {
-            Log.e("SOS_AUDIT", "SIREN_STOP_FAILED: ${e.message}")
-        }
-    }
-
-    override fun onStop() {
-        super.onStop()
-        stopSiren()
-    }
-
     override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
-        stopSiren()
+        if (isFinishing) {
+            SirenPlayer.stop(this)
+            cancelNotification()
+        }
         super.onDestroy()
     }
 
@@ -135,6 +104,12 @@ class SOSIncomingActivity : ComponentActivity() {
             val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             keyguardManager.requestDismissKeyguard(this, null)
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        )
     }
 }

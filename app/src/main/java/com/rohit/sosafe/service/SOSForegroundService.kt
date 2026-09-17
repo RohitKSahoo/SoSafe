@@ -1,4 +1,4 @@
-package com.rohit.sosafe.service
+ package com.rohit.sosafe.service
 
 import android.annotation.SuppressLint
 import android.app.Notification
@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -39,13 +40,14 @@ import com.rohit.sosafe.utils.ServiceState
 import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import com.rohit.sosafe.utils.SirenPlayer
 import com.rohit.sosafe.data.supabase.SupabaseApi
 import java.io.File
 
 class SOSForegroundService : Service() {
 
     private val CHANNEL_ID = "SOS_SERVICE_CHANNEL"
-    private val GUARDIAN_CHANNEL_ID = "SOS_GUARDIAN_CHANNEL"
+    private val GUARDIAN_CHANNEL_ID = "SOS_GUARDIAN_CHANNEL_V2"
     private val NOTIFICATION_ID = 1
     private val AUDIT_TAG = "SOS_AUDIT"
     private var sosTriggerManager: SOSTriggerManager? = null
@@ -53,6 +55,8 @@ class SOSForegroundService : Service() {
     private var sessionId: String = ""
     private var audioSequence = 0
     private var lastKnownLocation: GeoPoint? = null
+    private var isSessionDiscoveryActive = false
+    private var discoveryPollingJob: Job? = null
     
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -113,6 +117,8 @@ class SOSForegroundService : Service() {
             sosTriggerManager = SOSTriggerManager(this)
             sosTriggerManager?.startDetection()
             ServiceState.setGuardianActive(true)
+        } else if (RoleManager.isGuardian()) {
+            ServiceState.setGuardianActive(true)
         }
     }
 
@@ -152,11 +158,30 @@ class SOSForegroundService : Service() {
         // Use custom name if available in our local cache
         val displayName = contactNames[senderId] ?: senderName
         
+        // Immediately start continuous looping siren & vibration via SirenPlayer
+        SirenPlayer.start(this)
+
         val notification = createFullScreenNotification(sessionId, senderId, displayName)
         
         val alertNotificationId = sessionId.hashCode()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(alertNotificationId, notification)
+        
+        try {
+            val launchIntent = Intent(this, SOSIncomingActivity::class.java).apply {
+                putExtra("sessionId", sessionId)
+                putExtra("senderId", senderId)
+                putExtra("senderName", displayName)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or 
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or 
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            }
+            startActivity(launchIntent)
+            Log.d(AUDIT_TAG, "DIRECT_LAUNCH_TRIGGERED: SOSIncomingActivity launch requested.")
+        } catch (e: Exception) {
+            Log.w(AUDIT_TAG, "Direct launch from service skipped/failed: ${e.message}")
+        }
         
         ServiceState.setGuardianActive(true)
         Log.d(AUDIT_TAG, "ALERT_TRIGGERED: Session $sessionId from $senderId")
@@ -185,6 +210,9 @@ class SOSForegroundService : Service() {
 
     private fun startGuardianSessionDiscovery() {
         val myCode = userManager.getUserCodeSync() ?: return
+
+        isSessionDiscoveryActive = true
+        ServiceState.setGuardianActive(true)
 
         val notification = createNotification("SoSafe Guardian Active", "Monitoring for emergency sessions...")
         startForeground(NOTIFICATION_ID, notification)
@@ -232,12 +260,51 @@ class SOSForegroundService : Service() {
 
     private fun updateSosAlertListener(contacts: List<String>) {
         sessionsRealtimeService?.stop()
+        discoveryPollingJob?.cancel()
+
         if (contacts.isEmpty()) {
             Log.d(AUDIT_TAG, "No contacts to monitor in service.")
             return
         }
 
         Log.d(AUDIT_TAG, "SERVICE_DISCOVERY: Monitoring ${contacts.size} contacts")
+
+        discoveryPollingJob = serviceScope.launch(Dispatchers.IO) {
+            while (isSessionDiscoveryActive) {
+                try {
+                    val rows = SupabaseApi.select("sessions", "status=eq.ACTIVE")
+                    val activeSessionIds = mutableSetOf<String>()
+                    for (i in 0 until rows.length()) {
+                        val obj = rows.getJSONObject(i)
+                        val sId = obj.optString("session_id")
+                        val senderId = obj.optString("sender_id")
+                        if (senderId in contacts) {
+                            activeSessionIds.add(sId)
+                            triggerSosIncomingAlert(
+                                sId,
+                                senderId,
+                                contactNames[senderId] ?: "User ${senderId.take(4)}"
+                            )
+                        }
+                    }
+                    // Clean up notifications for sessions that are no longer active
+                    val endedSessions = notifiedSessions.filter { it !in activeSessionIds }
+                    if (endedSessions.isNotEmpty()) {
+                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        for (eId in endedSessions) {
+                            notificationManager.cancel(eId.hashCode())
+                        }
+                        notifiedSessions.removeAll(endedSessions.toSet())
+                        if (notifiedSessions.isEmpty()) {
+                            SirenPlayer.stop(this@SOSForegroundService)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(AUDIT_TAG, "SERVICE_POLL_ERROR: ${e.message}")
+                }
+                kotlinx.coroutines.delay(3000)
+            }
+        }
 
         sessionsRealtimeService = com.rohit.sosafe.data.supabase.SupabaseRealtimeClient("sessions") { type, record ->
             val sId = record.optString("session_id")
@@ -255,6 +322,10 @@ class SOSForegroundService : Service() {
                     } else if (status == SoSafeContract.Status.ENDED) {
                         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                         notificationManager.cancel(sId.hashCode())
+                        notifiedSessions.remove(sId)
+                        if (notifiedSessions.isEmpty()) {
+                            SirenPlayer.stop(this@SOSForegroundService)
+                        }
                     }
                 }
             }
@@ -282,13 +353,13 @@ class SOSForegroundService : Service() {
             .setContentTitle("INCOMING SOS ALERT")
             .setContentText("$senderName is in danger!")
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(mainPendingIntent)
             .setVibrate(longArrayOf(0, 1000, 500, 1000, 500, 1000))
-            .setSound(soundUri)
+            .setSound(soundUri, AudioManager.STREAM_ALARM)
             .build()
     }
 
@@ -316,6 +387,17 @@ class SOSForegroundService : Service() {
 
         serviceScope.launch(Dispatchers.IO) {
             val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
+            
+            // Clean up any stale active sessions for this sender in Supabase
+            try {
+                val endPreviousJson = JSONObject().apply {
+                    put("status", SoSafeContract.Status.ENDED)
+                    put("last_updated_at", System.currentTimeMillis())
+                }
+                SupabaseApi.update("sessions", "sender_id=eq.$myId&status=eq.ACTIVE", endPreviousJson)
+            } catch (e: Exception) {
+                Log.w(AUDIT_TAG, "STALE_SESSION_CLEANUP_WARN: ${e.message}")
+            }
             
             val sessionJson = JSONObject().apply {
                 put("session_id", sessionId)
@@ -497,9 +579,12 @@ class SOSForegroundService : Service() {
 
     private fun stopAndUploadChunk() {
         val fileToUpload = currentAudioFile
-        val sequence = audioSequence++
+        val sequence = audioSequence
         try {
-            mediaRecorder?.apply { stop(); release() }
+            mediaRecorder?.apply { 
+                try { stop() } catch(e: Exception) { Log.w(AUDIT_TAG, "MediaRecorder stop silent exception: ${e.message}") }
+                release() 
+            }
             mediaRecorder = null
             
             val myId = userManager.getUserCodeSync() ?: "UNKNOWN"
@@ -573,6 +658,14 @@ class SOSForegroundService : Service() {
             }
         }
         
+        isSessionDiscoveryActive = false
+        discoveryPollingJob?.cancel()
+        userRealtimeService?.stop()
+        sessionsRealtimeService?.stop()
+        SirenPlayer.stop(this)
+        ServiceState.setGuardianActive(false)
+        ServiceState.setEmergencyActive(false)
+
         sosTriggerManager?.stopDetection()
         locationCallback?.let { fusedLocationClient.removeLocationUpdates(it) }
         webrtcManager?.stop()
@@ -585,6 +678,14 @@ class SOSForegroundService : Service() {
         
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.d(AUDIT_TAG, "SERVICE_TASK_REMOVED: Task swiped from recents. Ensuring guardian monitoring continues...")
+        if (RoleManager.isGuardian()) {
+            startGuardianSessionDiscovery()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -608,12 +709,14 @@ class SOSForegroundService : Service() {
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setUsage(AudioAttributes.USAGE_ALARM)
+                .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
                 .build()
 
             val guardianChannel = NotificationChannel(GUARDIAN_CHANNEL_ID, "Emergency Alerts", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Critical alerts for incoming SOS calls"
                 enableLights(true)
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
                 setBypassDnd(true)
                 setSound(soundUri, audioAttributes)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC

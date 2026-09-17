@@ -85,6 +85,14 @@ dependencies {
     // Map - osmdroid
     implementation("org.osmdroid:osmdroid-android:6.1.20")
 
+    // QR Generation & Barcode Scanning (MLKit + CameraX + ZXing)
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    implementation("com.google.guava:guava:33.0.0-android")
+
     // WebRTC (Using io.github.webrtc-sdk as com.google.webrtc is often unavailable)
     implementation("io.github.webrtc-sdk:android:125.6422.06")
 
