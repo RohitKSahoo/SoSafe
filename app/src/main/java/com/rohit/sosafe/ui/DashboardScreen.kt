@@ -1146,19 +1146,37 @@ fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> U
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column {
-            Text(
-                text = "SOSAFE",
-                style = MaterialTheme.typography.headlineSmall,
-                color = PureWhite,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "SOSAFE",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = PureWhite,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                if (appMode == AppMode.GUARDIAN) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = "Guardian Mode",
+                        tint = PureWhite,
+                        modifier = Modifier.size(24.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Sos,
+                        contentDescription = "Sender Mode",
+                        tint = DangerRed,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
             Text(
                 text = if (appMode == AppMode.SENDER) {
                     if (isProtectionActive) "PROTECTION ENABLED" else "SYSTEM IDLE"
                 } else "GUARDIAN MODE ACTIVE",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (appMode == AppMode.SENDER && isProtectionActive) SuccessGreen else LightGrey
+                color = if (appMode == AppMode.SENDER && isProtectionActive) SuccessGreen else if (appMode == AppMode.GUARDIAN) SuccessGreen else LightGrey
             )
         }
 
@@ -1406,16 +1424,14 @@ fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit
                     )
                 }
             }
-            Text(
-                text = when(contact.status) {
-                    ContactStatus.EMERGENCY -> "!!! SOS ACTIVE !!!"
-                    ContactStatus.ONLINE -> "READY"
-                    else -> "IDLE"
-                }, 
-                style = MaterialTheme.typography.labelSmall, 
-                color = if (isEmergency) DangerRed else if (contact.status == ContactStatus.ONLINE) SuccessGreen else LightGrey,
-                fontWeight = if (isEmergency) FontWeight.Bold else FontWeight.Normal
-            )
+            if (isEmergency) {
+                Text(
+                    text = "!!! SOS ACTIVE !!!",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = DangerRed,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
         
         if (isEmergency) {
