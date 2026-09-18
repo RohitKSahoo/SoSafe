@@ -40,6 +40,7 @@ import com.rohit.sosafe.utils.ServiceState
 import com.rohit.sosafe.utils.WebRTCManager
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import com.rohit.sosafe.R
 import com.rohit.sosafe.utils.SirenPlayer
 import com.rohit.sosafe.data.supabase.SupabaseApi
 import java.io.File
@@ -516,7 +517,7 @@ class SOSForegroundService : Service() {
         val soundUri = Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + packageName + "/raw/siren")
 
         return NotificationCompat.Builder(this, GUARDIAN_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_report_image)
+            .setSmallIcon(R.drawable.ic_sos)
             .setContentTitle("INCOMING SOS ALERT")
             .setContentText("$senderName is in danger!")
             .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -861,7 +862,7 @@ class SOSForegroundService : Service() {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title).setContentText(content).setSmallIcon(android.R.drawable.ic_menu_report_image)
+            .setContentTitle(title).setContentText(content).setSmallIcon(R.drawable.ic_sos)
             .setOngoing(true).setContentIntent(pendingIntent).build()
     }
 
@@ -889,7 +890,7 @@ class SOSForegroundService : Service() {
         return NotificationCompat.Builder(this, PAIRING_CHANNEL_ID)
             .setContentTitle("🔗 Link Request")
             .setContentText("$fromUserName ($fromUserId) sent you a link request")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_sos)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
