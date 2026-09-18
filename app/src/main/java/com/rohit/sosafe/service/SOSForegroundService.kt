@@ -90,6 +90,12 @@ class SOSForegroundService : Service() {
         const val ACTION_START_EMERGENCY = "ACTION_START_EMERGENCY"
         const val ACTION_STOP_EMERGENCY = "ACTION_STOP_EMERGENCY"
         const val ACTION_GUARDIAN_SOS = "ACTION_GUARDIAN_SOS"
+        const val ACTION_OPEN_PAIRING = "ACTION_OPEN_PAIRING"
+        const val PAIRING_CHANNEL_ID = "sosafe_pairing_channel"
+        const val EXTRA_PAIRING_REQUEST_ID = "EXTRA_PAIRING_REQUEST_ID"
+        const val EXTRA_PAIRING_FROM_ID = "EXTRA_PAIRING_FROM_ID"
+        const val EXTRA_PAIRING_FROM_NAME = "EXTRA_PAIRING_FROM_NAME"
+        const val EXTRA_PAIRING_CREATED_AT = "EXTRA_PAIRING_CREATED_AT"
     }
 
     override fun onCreate() {
@@ -211,6 +217,9 @@ class SOSForegroundService : Service() {
 
     private var userRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
     private var sessionsRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
+    private var pairingRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
+    private var pairingPollingJob: Job? = null
+    private val notifiedPairingRequests = mutableSetOf<String>()
 
     private fun startUniversalMonitoring() {
         val myCode = userManager.getUserCodeSync() ?: return
@@ -243,6 +252,76 @@ class SOSForegroundService : Service() {
                 fetchServiceUserContacts(myCode)
             }
         }.apply { start() }
+
+        // Start background pairing request observation
+        observePairingRequestsService(myCode)
+    }
+
+    private fun observePairingRequestsService(myCode: String) {
+        pairingRealtimeService?.stop()
+        pairingPollingJob?.cancel()
+
+        pairingPollingJob = serviceScope.launch(Dispatchers.IO) {
+            while (isSessionDiscoveryActive) {
+                pollPairingRequests(myCode)
+                kotlinx.coroutines.delay(3500)
+            }
+        }
+
+        pairingRealtimeService = com.rohit.sosafe.data.supabase.SupabaseRealtimeClient("pairing_requests", "to_user_id", myCode) { _, _ ->
+            serviceScope.launch(Dispatchers.IO) {
+                pollPairingRequests(myCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun pollPairingRequests(myCode: String) {
+        try {
+            val rows = SupabaseApi.select("pairing_requests", "to_user_id=eq.$myCode&status=eq.PENDING")
+            val now = System.currentTimeMillis()
+            val maxTtlMs = 10 * 60 * 1000L // 10-minute TTL
+            val activePendingIds = mutableSetOf<String>()
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            for (i in 0 until rows.length()) {
+                val obj = rows.getJSONObject(i)
+                val reqId = obj.optString("request_id")
+                val fromUserId = obj.optString("from_user_id")
+                val fromUserName = obj.optString("from_user_name")
+                val createdAt = obj.optLong("created_at")
+
+                // Check 10-minute expiry
+                if (now - createdAt > maxTtlMs) {
+                    if (notifiedPairingRequests.contains(reqId)) {
+                        notificationManager.cancel(reqId.hashCode())
+                        notifiedPairingRequests.remove(reqId)
+                    }
+                    continue
+                }
+
+                activePendingIds.add(reqId)
+
+                // Only notify if app is not in the foreground
+                if (!ServiceState.isAppInForeground.value) {
+                    if (!notifiedPairingRequests.contains(reqId)) {
+                        notifiedPairingRequests.add(reqId)
+                        val displayName = fromUserName.ifBlank { "User $fromUserId" }
+                        val notification = createPairingNotification(reqId, fromUserId, displayName, createdAt)
+                        notificationManager.notify(reqId.hashCode(), notification)
+                        Log.d(AUDIT_TAG, "PAIRING_NOTIF_POSTED: Request $reqId from $fromUserId")
+                    }
+                }
+            }
+
+            // Clean up notifications for requests no longer pending or expired
+            val removed = notifiedPairingRequests.filter { it !in activePendingIds }
+            for (rId in removed) {
+                notificationManager.cancel(rId.hashCode())
+                notifiedPairingRequests.remove(rId)
+            }
+        } catch (e: Exception) {
+            Log.e(AUDIT_TAG, "PAIRING_POLL_ERROR: ${e.message}")
+        }
     }
 
     private fun fetchServiceUserContacts(myCode: String) {
@@ -678,6 +757,8 @@ class SOSForegroundService : Service() {
         discoveryPollingJob?.cancel()
         userRealtimeService?.stop()
         sessionsRealtimeService?.stop()
+        pairingPollingJob?.cancel()
+        pairingRealtimeService?.stop()
         SirenPlayer.stop(this)
         ServiceState.setGuardianActive(false)
         ServiceState.setEmergencyActive(false)
@@ -712,12 +793,50 @@ class SOSForegroundService : Service() {
             .setOngoing(true).setContentIntent(pendingIntent).build()
     }
 
+    private fun createPairingNotification(
+        requestId: String,
+        fromUserId: String,
+        fromUserName: String,
+        createdAt: Long
+    ): Notification {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = ACTION_OPEN_PAIRING
+            putExtra(EXTRA_PAIRING_REQUEST_ID, requestId)
+            putExtra(EXTRA_PAIRING_FROM_ID, fromUserId)
+            putExtra(EXTRA_PAIRING_FROM_NAME, fromUserName)
+            putExtra(EXTRA_PAIRING_CREATED_AT, createdAt)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            requestId.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, PAIRING_CHANNEL_ID)
+            .setContentTitle("🔗 Link Request")
+            .setContentText("$fromUserName ($fromUserId) sent you a link request")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .build()
+    }
+
     private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             
             val serviceChannel = NotificationChannel(CHANNEL_ID, "SoSafe Service", NotificationManager.IMPORTANCE_HIGH)
             manager.createNotificationChannel(serviceChannel)
+
+            val pairingChannel = NotificationChannel(PAIRING_CHANNEL_ID, "Link & Pairing Requests", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Notifications for incoming guardian and contact link requests"
+                enableLights(true)
+                enableVibration(true)
+            }
+            manager.createNotificationChannel(pairingChannel)
             
             val soundUri = Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + packageName + "/raw/siren")
             val audioAttributes = AudioAttributes.Builder()

@@ -58,6 +58,7 @@ object SoSafeContract {
         const val PENDING = "PENDING"
         const val ACCEPTED = "ACCEPTED"
         const val REJECTED = "REJECTED"
+        const val EXPIRED = "EXPIRED"
     }
 
     // --- Dynamic Path Helpers ---

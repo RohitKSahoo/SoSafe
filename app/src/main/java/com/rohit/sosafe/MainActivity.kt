@@ -30,6 +30,7 @@ import com.rohit.sosafe.ui.ModeSelectionScreen
 import com.rohit.sosafe.ui.AddContactDialog
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.utils.RecordingManager
+import com.rohit.sosafe.utils.ServiceState
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -39,6 +40,37 @@ class MainActivity : ComponentActivity() {
     private lateinit var appModeManager: AppModeManager
     private lateinit var streamingModeManager: StreamingModeManager
     private lateinit var recordingManager: RecordingManager
+    private var dashboardViewModel: DashboardViewModel? = null
+    private var pendingPairingIntent: Intent? = null
+
+    override fun onStart() {
+        super.onStart()
+        ServiceState.setAppInForeground(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        ServiceState.setAppInForeground(false)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePairingIntent(intent)
+    }
+
+    private fun handlePairingIntent(intent: Intent?) {
+        if (intent?.action == SOSForegroundService.ACTION_OPEN_PAIRING) {
+            val reqId = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_REQUEST_ID) ?: return
+            val fromId = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_FROM_ID) ?: ""
+            val fromName = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_FROM_NAME) ?: ""
+            val createdAt = intent.getLongExtra(SOSForegroundService.EXTRA_PAIRING_CREATED_AT, 0L)
+
+            dashboardViewModel?.onPairingNotificationOpened(reqId, fromId, fromName, createdAt) ?: run {
+                pendingPairingIntent = intent
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,6 +111,15 @@ class MainActivity : ComponentActivity() {
                     val viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
                         factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager, recordingManager, networkMonitor)
                     )
+                    dashboardViewModel = viewModel
+
+                    LaunchedEffect(viewModel) {
+                        pendingPairingIntent?.let {
+                            handlePairingIntent(it)
+                            pendingPairingIntent = null
+                        }
+                        handlePairingIntent(intent)
+                    }
                     
                     MainScreen(
                         userManager = userManager,

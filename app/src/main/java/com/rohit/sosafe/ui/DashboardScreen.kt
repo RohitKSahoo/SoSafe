@@ -329,7 +329,7 @@ fun DashboardScreen(
         )
     }
 
-    // Pairing Request Dialog Handling (2-Step Guardian Confirmation with custom renaming)
+    // Pairing Request Dialog Handling (2-Step Guardian Confirmation with custom renaming & 10-min countdown)
     if (state.pendingPairingRequests.isNotEmpty()) {
         val request = state.pendingPairingRequests.first()
         val requesterName = request.fromUserName.ifBlank { "User ${request.fromUserId}" }
@@ -337,9 +337,41 @@ fun DashboardScreen(
             mutableStateOf("") 
         }
 
+        var remainingSeconds by remember(request.requestId, request.createdAt) {
+            val elapsed = (System.currentTimeMillis() - request.createdAt) / 1000
+            val initial = (600 - elapsed).coerceAtLeast(0)
+            mutableStateOf(initial)
+        }
+
+        LaunchedEffect(request.requestId, request.createdAt) {
+            while (remainingSeconds > 0) {
+                kotlinx.coroutines.delay(1000)
+                val elapsed = (System.currentTimeMillis() - request.createdAt) / 1000
+                remainingSeconds = (600 - elapsed).coerceAtLeast(0)
+            }
+        }
+
+        val minutes = remainingSeconds / 60
+        val seconds = remainingSeconds % 60
+        val timeDisplay = String.format("%02d:%02d", minutes, seconds)
+
         AlertDialog(
             onDismissRequest = { viewModel.declinePairingRequest(request) },
-            title = { Text("LINK REQUEST", color = PureWhite, fontWeight = FontWeight.Bold) },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("LINK REQUEST", color = PureWhite, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (remainingSeconds > 0) "⏱ $timeDisplay" else "EXPIRED",
+                        color = if (remainingSeconds > 60) SuccessGreen else DangerRed,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
             text = { 
                 Column {
                     Text(
@@ -374,16 +406,65 @@ fun DashboardScreen(
             },
             confirmButton = {
                 Button(
-                    onClick = { viewModel.acceptPairingRequest(request, contactCustomName) },
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
-                    shape = RoundedCornerShape(4.dp)
+                    onClick = { 
+                        if (remainingSeconds > 0) {
+                            viewModel.acceptPairingRequest(request, contactCustomName)
+                        } else {
+                            viewModel.declinePairingRequest(request)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (remainingSeconds > 0) SuccessGreen else MediumGrey, 
+                        contentColor = Black
+                    ),
+                    shape = RoundedCornerShape(4.dp),
+                    enabled = remainingSeconds > 0
                 ) {
-                    Text("ACCEPT", fontWeight = FontWeight.Bold)
+                    Text(if (remainingSeconds > 0) "ACCEPT" else "EXPIRED", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.declinePairingRequest(request) }) {
                     Text("DECLINE", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Expired Pairing Request Alert Dialog
+    if (state.expiredPairingNotice != null) {
+        val expiredReq = state.expiredPairingNotice!!
+        val senderLabel = expiredReq.fromUserName.ifBlank { "User ${expiredReq.fromUserId}" }
+        AlertDialog(
+            onDismissRequest = { viewModel.clearExpiredNotice() },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = DangerRed,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("PAIRING EXPIRED", color = DangerRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Text(
+                    text = "The pairing request from $senderLabel (${expiredReq.fromUserId}) has expired (10-minute limit). Please ask them to send a new pairing request.",
+                    color = LightGrey,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.clearExpiredNotice() },
+                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("OK", fontWeight = FontWeight.Bold)
                 }
             },
             containerColor = DarkGrey,

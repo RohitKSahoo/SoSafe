@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-class UserManager(private val context: Context) {
+class UserManager(val context: Context) {
 
     private val tag = "UserManager"
     private val userCodeKey = "user_code"
