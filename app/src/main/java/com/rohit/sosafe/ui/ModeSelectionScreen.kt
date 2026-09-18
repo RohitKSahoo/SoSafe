@@ -2,10 +2,9 @@ package com.rohit.sosafe.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.ImageView
 import android.widget.Toast
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,125 +16,27 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.rohit.sosafe.R
+import androidx.compose.ui.viewinterop.AndroidView
 import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.ui.theme.*
 import com.rohit.sosafe.utils.QrCodeUtils
-import kotlin.math.sqrt
-import java.util.Random
-
-/**
- * Live animated peer-safety network mesh background with floating nodes and connecting lines.
- */
-@Composable
-fun LiveConstellationBackground(
-    modifier: Modifier = Modifier,
-    particleCount: Int = 28,
-    pointColor: Color = PureWhite,
-    lineColor: Color = PureWhite,
-    maxLineDistanceDp: Float = 115f
-) {
-    val density = LocalDensity.current
-    val maxLineDistancePx = with(density) { maxLineDistanceDp.dp.toPx() }
-
-    val particles = remember {
-        val rand = Random(42)
-        List(particleCount) {
-            ConstellationParticle(
-                x = rand.nextFloat(),
-                y = rand.nextFloat(),
-                vx = (rand.nextFloat() - 0.5f) * 0.0012f,
-                vy = (rand.nextFloat() - 0.5f) * 0.0012f,
-                radius = 1.2f + rand.nextFloat() * 1.6f
-            )
-        }
-    }
-
-    val infiniteTransition = rememberInfiniteTransition(label = "ConstellationPulse")
-    val pulse by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "Pulse"
-    )
-
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-
-        // Update particle positions
-        for (p in particles) {
-            p.x += p.vx
-            p.y += p.vy
-            if (p.x < 0f) { p.x = 0f; p.vx = -p.vx }
-            if (p.x > 1f) { p.x = 1f; p.vx = -p.vx }
-            if (p.y < 0f) { p.y = 0f; p.vy = -p.vy }
-            if (p.y > 1f) { p.y = 1f; p.vy = -p.vy }
-        }
-
-        // Draw connecting lines
-        for (i in 0 until particles.size) {
-            val p1 = particles[i]
-            val x1 = p1.x * w
-            val y1 = p1.y * h
-
-            for (j in i + 1 until particles.size) {
-                val p2 = particles[j]
-                val x2 = p2.x * w
-                val y2 = p2.y * h
-
-                val dx = x2 - x1
-                val dy = y2 - y1
-                val dist = sqrt(dx * dx + dy * dy)
-                if (dist < maxLineDistancePx) {
-                    val alpha = (1f - (dist / maxLineDistancePx)) * 0.16f
-                    drawLine(
-                        color = lineColor.copy(alpha = alpha),
-                        start = Offset(x1, y1),
-                        end = Offset(x2, y2),
-                        strokeWidth = 1f
-                    )
-                }
-            }
-
-            // Draw node point
-            drawCircle(
-                color = pointColor.copy(alpha = 0.35f),
-                radius = p1.radius,
-                center = Offset(x1, y1)
-            )
-        }
-    }
-}
-
-private class ConstellationParticle(
-    var x: Float,
-    var y: Float,
-    var vx: Float,
-    var vy: Float,
-    val radius: Float
-)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -164,13 +65,22 @@ fun ModeSelectionScreen(
         QrCodeUtils.generateQrCodeBitmap(qrPayload, 380)
     }
 
+    // Safe loading of the application launcher icon across all Android versions
+    val appIconDrawable = remember(context) {
+        try {
+            context.packageManager.getApplicationIcon(context.packageName)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = DarkBackground
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Live animated background with moving points and lines
-            LiveConstellationBackground()
+            // Dotted grid background identical to Dashboard and Settings screens
+            GridBackground()
 
             AnimatedContent(
                 targetState = selectedRole,
@@ -204,13 +114,24 @@ fun ModeSelectionScreen(
                                 .border(1.dp, MediumGrey, RoundedCornerShape(0.dp)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Image(
-                                painter = painterResource(id = R.mipmap.ic_launcher),
-                                contentDescription = "SoSafe App Icon",
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(0.dp))
-                            )
+                            if (appIconDrawable != null) {
+                                AndroidView(
+                                    factory = { ctx ->
+                                        ImageView(ctx).apply {
+                                            setImageDrawable(appIconDrawable)
+                                            scaleType = ImageView.ScaleType.FIT_CENTER
+                                        }
+                                    },
+                                    modifier = Modifier.size(52.dp)
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Shield,
+                                    contentDescription = "SoSafe App Icon",
+                                    tint = PureWhite,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(20.dp))
