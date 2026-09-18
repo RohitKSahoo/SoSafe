@@ -97,9 +97,7 @@ fun DashboardScreen(
     var showQrScannerDialog by remember { mutableStateOf(false) }
     var showPairingMenuDialog by remember { mutableStateOf(false) }
     var scannedQrData by remember { mutableStateOf<ScannedQrData?>(null) }
-    var showNamePromptDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    var sharerNameInput by remember { mutableStateOf(com.rohit.sosafe.data.UserManager(context).getUserName()) }
 
     LaunchedEffect(deepLinkPairData) {
         if (deepLinkPairData != null) {
@@ -108,10 +106,12 @@ fun DashboardScreen(
         }
     }
 
-    // My QR Code Display Dialog
+    // My QR Code Display Bottom Drawer
     if (showMyQrDialog) {
+        val userManager = remember { com.rohit.sosafe.data.UserManager(context) }
+        val currentUserName = userManager.getUserName()
         val rawCode = state.userCode.replace("-", "")
-        val currentSharerName = sharerNameInput.trim().ifBlank { "User $rawCode" }
+        val currentSharerName = currentUserName.trim().ifBlank { "User $rawCode" }
         val encodedSharerName = Uri.encode(currentSharerName)
         val shareableUrl = "https://rohitksahoo.github.io/SoSafe/pair?id=$rawCode&name=$encodedSharerName"
 
@@ -119,172 +119,197 @@ fun DashboardScreen(
             QrCodeUtils.generateQrCodeBitmap("sosafe://pair?id=$rawCode&name=$encodedSharerName", size = 600)
         }
 
-        AlertDialog(
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+        ModalBottomSheet(
             onDismissRequest = { showMyQrDialog = false },
-            title = { Text("MY PAIRING QR CODE", color = PureWhite, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(
+            sheetState = sheetState,
+            containerColor = DarkGrey,
+            contentColor = PureWhite,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            dragHandle = {
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("Have your guardian scan this QR code to link instantly.", color = LightGrey, style = MaterialTheme.typography.bodySmall)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    if (qrBitmap != null) {
+                        .padding(top = 12.dp, bottom = 8.dp)
+                        .size(width = 40.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MediumGrey)
+                )
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "MY PAIRING QR",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = PureWhite,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = "Scan this QR code or share your link to pair instantly.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LightGrey,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // QR Box with sharp edges
+                if (qrBitmap != null) {
+                    Box(
+                        modifier = Modifier
+                            .size(220.dp)
+                            .clip(RoundedCornerShape(0.dp))
+                            .background(Color.White)
+                            .padding(4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Image(
                             bitmap = qrBitmap.asImageBitmap(),
-                            contentDescription = "My QR Code",
-                            modifier = Modifier
-                                .size(210.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(PureWhite)
-                                .padding(12.dp)
+                            contentDescription = "My Pairing QR Code",
+                            modifier = Modifier.fillMaxSize()
                         )
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("ID: ${state.userCode}", color = SuccessGreen, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Shareable Link Container directly below the QR
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MediumGrey)
-                            .padding(12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "PAIRING INVITE LINK",
-                            color = PureWhite,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = shareableUrl,
-                            color = LightGrey,
-                            fontSize = 11.sp,
-                            maxLines = 2,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Black)
-                                .padding(horizontal = 8.dp, vertical = 6.dp)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    showNamePromptDialog = true
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Icon(imageVector = Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("SHARE", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-
-                            Button(
-                                onClick = {
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    val clip = android.content.ClipData.newPlainText("SoSafe Pairing Link", shareableUrl)
-                                    clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(context, "Link copied to clipboard!", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = DarkGrey, contentColor = PureWhite),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("COPY", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { showMyQrDialog = false },
-                    colors = ButtonDefaults.buttonColors(containerColor = MediumGrey, contentColor = PureWhite),
-                    shape = RoundedCornerShape(4.dp)
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Device ID Box
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(DarkBackground)
+                        .border(1.dp, MediumGrey, RoundedCornerShape(0.dp))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
-                    Text("CLOSE", fontWeight = FontWeight.Bold)
-                }
-            },
-            containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
-        )
-    }
-
-    // Pre-Share Name Dialog (Allows sharer to set/confirm their name before sharing the link)
-    if (showNamePromptDialog) {
-        val rawCode = state.userCode.replace("-", "")
-        AlertDialog(
-            onDismissRequest = { showNamePromptDialog = false },
-            title = { Text("ENTER YOUR NAME", color = PureWhite, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("YOUR NAME", color = PureWhite, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TextField(
-                        value = sharerNameInput,
-                        onValueChange = { sharerNameInput = it },
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Black,
-                            unfocusedContainerColor = Black,
-                            focusedTextColor = PureWhite,
-                            unfocusedTextColor = PureWhite,
-                            focusedIndicatorColor = PureWhite,
-                            unfocusedIndicatorColor = MediumGrey
-                        ),
-                        placeholder = { Text("E.g. Mom, Dad", color = MediumGrey) },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showNamePromptDialog = false
-                        val finalName = sharerNameInput.trim().ifBlank { "User $rawCode" }
-                        val encoded = Uri.encode(finalName)
-                        val fullUrl = "https://rohitksahoo.github.io/SoSafe/pair?id=$rawCode&name=$encoded"
-                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "SoSafe Pairing Invite")
-                            putExtra(
-                                Intent.EXTRA_TEXT,
-                                "Add me on SoSafe for emergency safety & live monitoring!\n\nTap to connect with $finalName:\n$fullUrl"
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Device ID",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = LightGrey,
+                                fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = state.userCode,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = PureWhite,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 2.sp
                             )
                         }
-                        val chooser = Intent.createChooser(sendIntent, "Share Pairing Link via")
-                        context.startActivity(chooser)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
-                    shape = RoundedCornerShape(4.dp)
+
+                        IconButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("SoSafe Device ID", state.userCode)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Device ID copied!", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy ID",
+                                tint = LightGrey,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Side-by-side action buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("SHARE LINK", fontWeight = FontWeight.Bold)
+                    Button(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            val clip = android.content.ClipData.newPlainText("SoSafe Pairing Link", shareableUrl)
+                            clipboard.setPrimaryClip(clip)
+                            Toast.makeText(context, "Link copied to clipboard!", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(0.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = DarkBackground,
+                            contentColor = PureWhite
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = PureWhite
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "COPY LINK",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_SUBJECT, "SoSafe Pairing Invite")
+                                putExtra(
+                                    Intent.EXTRA_TEXT,
+                                    "Add me as your emergency safety contact on SoSafe:\n$shareableUrl"
+                                )
+                            }
+                            context.startActivity(Intent.createChooser(sendIntent, "Share SoSafe Safety Link"))
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(0.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = DangerRed,
+                            contentColor = Color.Black
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = Color.Black
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "SHARE LINK",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showNamePromptDialog = false }) {
-                    Text("CANCEL", color = LightGrey)
-                }
-            },
-            containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
-        )
+            }
+        }
     }
 
     // Pairing Options Modal (Scan QR or View/Share Link)
@@ -1808,12 +1833,116 @@ fun SystemConfigSection(
     onStopService: () -> Unit, 
     onSwitchMode: () -> Unit
 ) {
+    val context = LocalContext.current
+    val userManager = remember { com.rohit.sosafe.data.UserManager(context) }
+    var currentUserName by remember { mutableStateOf(userManager.getUserName()) }
+    var showEditNameDialog by remember { mutableStateOf(false) }
+    var editedNameInput by remember { mutableStateOf(currentUserName) }
+
+    if (showEditNameDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditNameDialog = false },
+            title = {
+                Text("EDIT USER NAME", color = PureWhite, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            },
+            text = {
+                Column {
+                    Text("This name is shown to your emergency contacts when pairing.", color = LightGrey, style = MaterialTheme.typography.bodySmall)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = editedNameInput,
+                        onValueChange = { editedNameInput = it },
+                        placeholder = { Text("Your Name", color = MediumGrey) },
+                        leadingIcon = {
+                            Icon(Icons.Default.Person, contentDescription = null, tint = LightGrey, modifier = Modifier.size(20.dp))
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(4.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = PureWhite,
+                            unfocusedTextColor = PureWhite,
+                            focusedBorderColor = PureWhite,
+                            unfocusedBorderColor = MediumGrey,
+                            focusedContainerColor = Black,
+                            unfocusedContainerColor = Black,
+                            cursorColor = PureWhite
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = editedNameInput.trim()
+                        if (trimmed.isNotBlank()) {
+                            userManager.saveUserName(trimmed)
+                            currentUserName = trimmed
+                            showEditNameDialog = false
+                            Toast.makeText(context, "Name updated!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Name cannot be empty", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("SAVE", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditNameDialog = false }) {
+                    Text("CANCEL", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(8.dp)
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Text(text = "IDENTITY & PROFILE", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    editedNameInput = currentUserName
+                    showEditNameDialog = true
+                },
+            colors = CardDefaults.cardColors(containerColor = DarkCard),
+            shape = RoundedCornerShape(4.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Person, contentDescription = null, tint = PureWhite, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text("USER NAME", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = currentUserName.ifBlank { "Not set (Tap to edit)" },
+                            color = if (currentUserName.isNotBlank()) PureWhite else LightGrey,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
+                }
+                Icon(Icons.Default.Edit, contentDescription = "Edit Name", tint = LightGrey, modifier = Modifier.size(20.dp))
+            }
+        }
+
         if (appMode == AppMode.SENDER) {
             Text(text = "EMERGENCY ACTIONS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
             Card(

@@ -719,8 +719,6 @@ fun ModeSelectionScreen(
                                 letterSpacing = 1.sp
                             )
                         }
-
-                        Spacer(modifier = Modifier.height(24.dp))
                     }
                 }
             }
