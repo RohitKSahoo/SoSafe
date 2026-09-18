@@ -117,6 +117,7 @@ fun ModeSelectionScreen(
 ) {
     var selectedRole by remember { mutableStateOf<AppMode?>(null) }
     var nameInput by remember { mutableStateOf(initialName) }
+    var nameError by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
@@ -410,17 +411,24 @@ fun ModeSelectionScreen(
                         // 3. Name Input Field with Person Icon & Sharp Edges
                         OutlinedTextField(
                             value = nameInput,
-                            onValueChange = { nameInput = it },
+                            onValueChange = { 
+                                nameInput = it
+                                if (it.isNotBlank()) nameError = false
+                            },
                             placeholder = { Text("Enter your name (required) ", color = LightGrey) },
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Default.Person,
                                     contentDescription = null,
-                                    tint = LightGrey,
+                                    tint = if (nameError && nameInput.trim().isBlank()) DangerRed else LightGrey,
                                     modifier = Modifier.size(20.dp)
                                 )
                             },
                             singleLine = true,
+                            isError = nameError && nameInput.trim().isBlank(),
+                            supportingText = if (nameError && nameInput.trim().isBlank()) {
+                                { Text("Name is required to continue", color = DangerRed, fontSize = 11.sp) }
+                            } else null,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(0.dp),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -430,11 +438,14 @@ fun ModeSelectionScreen(
                                 unfocusedBorderColor = MediumGrey,
                                 focusedContainerColor = DarkGrey,
                                 unfocusedContainerColor = DarkGrey,
+                                errorBorderColor = DangerRed,
+                                errorContainerColor = DarkGrey,
+                                errorTextColor = PureWhite,
                                 cursorColor = PureWhite
                             )
                         )
 
-                        Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(30.dp))
 
                         // 4. Centered Divider: ─── YOUR SAFETY PAIRING QR ───
                         Row(
@@ -482,7 +493,7 @@ fun ModeSelectionScreen(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(30.dp))
 
                         // 6. Device ID Card with Copy Icon on the right
                         Box(
@@ -541,8 +552,15 @@ fun ModeSelectionScreen(
                             // Left COPY LINK button (Dark)
                             Button(
                                 onClick = {
-                                    clipboardManager.setText(AnnotatedString(inviteLink))
-                                    Toast.makeText(context, "Invite link copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                    val trimmedName = nameInput.trim()
+                                    if (trimmedName.isBlank()) {
+                                        nameError = true
+                                        Toast.makeText(context, "Please enter your name first", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        nameError = false
+                                        clipboardManager.setText(AnnotatedString(inviteLink))
+                                        Toast.makeText(context, "Invite link copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                    }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -572,14 +590,21 @@ fun ModeSelectionScreen(
                             // Right SHARE LINK button (Red)
                             Button(
                                 onClick = {
-                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(
-                                            Intent.EXTRA_TEXT,
-                                            "Add me as your emergency safety contact on SoSafe:\n$inviteLink"
-                                        )
+                                    val trimmedName = nameInput.trim()
+                                    if (trimmedName.isBlank()) {
+                                        nameError = true
+                                        Toast.makeText(context, "Please enter your name first", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        nameError = false
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(
+                                                Intent.EXTRA_TEXT,
+                                                "Add me as your emergency safety contact on SoSafe:\n$inviteLink"
+                                            )
+                                        }
+                                        context.startActivity(Intent.createChooser(shareIntent, "Share SoSafe Safety Link"))
                                     }
-                                    context.startActivity(Intent.createChooser(shareIntent, "Share SoSafe Safety Link"))
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -611,8 +636,14 @@ fun ModeSelectionScreen(
                         // 8. Continue to Dashboard CTA (White with black text & arrow)
                         Button(
                             onClick = {
-                                val finalName = nameInput.trim().ifBlank { "User $formattedCode" }
-                                onCompleted(targetMode, finalName)
+                                val trimmedName = nameInput.trim()
+                                if (trimmedName.isBlank()) {
+                                    nameError = true
+                                    Toast.makeText(context, "Please enter your name to continue", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    nameError = false
+                                    onCompleted(targetMode, trimmedName)
+                                }
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
