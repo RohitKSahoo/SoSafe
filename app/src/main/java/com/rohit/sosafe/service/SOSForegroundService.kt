@@ -219,6 +219,8 @@ class SOSForegroundService : Service() {
     private var sessionsRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
     private var pairingRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
     private var pairingPollingJob: Job? = null
+    private var pairingNotificationRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
+    private var pairingNotificationPollingJob: Job? = null
     private val notifiedPairingRequests = mutableSetOf<String>()
 
     private fun startUniversalMonitoring() {
@@ -253,8 +255,78 @@ class SOSForegroundService : Service() {
             }
         }.apply { start() }
 
-        // Start background pairing request observation
+        // Start background pairing request & notification observation
         observePairingRequestsService(myCode)
+        observePairingNotificationsService(myCode)
+    }
+
+    private fun observePairingNotificationsService(myCode: String) {
+        pairingNotificationRealtimeService?.stop()
+        pairingNotificationPollingJob?.cancel()
+
+        pairingNotificationPollingJob = serviceScope.launch(Dispatchers.IO) {
+            while (isSessionDiscoveryActive) {
+                pollPairingNotifications(myCode)
+                kotlinx.coroutines.delay(4000)
+            }
+        }
+
+        pairingNotificationRealtimeService = com.rohit.sosafe.data.supabase.SupabaseRealtimeClient("pairing_notifications", "target_user_id", myCode) { _, _ ->
+            serviceScope.launch(Dispatchers.IO) {
+                pollPairingNotifications(myCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun pollPairingNotifications(myCode: String) {
+        try {
+            val rows = SupabaseApi.select("pairing_notifications", "target_user_id=eq.$myCode")
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            for (i in 0 until rows.length()) {
+                val obj = rows.getJSONObject(i)
+                val notifId = obj.optString("notification_id")
+                val fromUserId = obj.optString("from_user_id")
+                val fromUserName = obj.optString("from_user_name").ifBlank { "User $fromUserId" }
+
+                // Refresh contacts cache
+                fetchServiceUserContacts(myCode)
+
+                if (!ServiceState.isAppInForeground.value) {
+                    val notif = createContactLinkedNotification(fromUserId, fromUserName)
+                    notificationManager.notify(notifId.hashCode(), notif)
+                    Log.d(AUDIT_TAG, "PAIRING_LINKED_NOTIF_POSTED: Contact $fromUserName ($fromUserId)")
+                }
+
+                // Dismiss from Supabase
+                serviceScope.launch(Dispatchers.IO) {
+                    userManager.dismissPairingNotification(notifId)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(AUDIT_TAG, "PAIRING_NOTIF_POLL_ERROR: ${e.message}")
+        }
+    }
+
+    private fun createContactLinkedNotification(fromUserId: String, fromUserName: String): Notification {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            fromUserId.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, PAIRING_CHANNEL_ID)
+            .setContentTitle("🎉 Contact Linked")
+            .setContentText("$fromUserName has linked with you as an emergency contact")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
     }
 
     private fun observePairingRequestsService(myCode: String) {

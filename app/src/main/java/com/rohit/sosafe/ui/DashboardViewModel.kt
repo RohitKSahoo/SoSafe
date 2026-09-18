@@ -38,6 +38,7 @@ class DashboardViewModel(
     private var userRealtime: SupabaseRealtimeClient? = null
     private var pairingRealtime: SupabaseRealtimeClient? = null
     private var removalRealtime: SupabaseRealtimeClient? = null
+    private var pairingNotificationRealtime: SupabaseRealtimeClient? = null
     private var sessionsRealtime: SupabaseRealtimeClient? = null
     private var targetedPairingRequestId: String? = null
 
@@ -103,6 +104,7 @@ class DashboardViewModel(
             observeUserContacts(code)
             observePairingRequests(code)
             observeRemovalNotifications(code)
+            observePairingNotifications(code)
         }
     }
 
@@ -267,6 +269,59 @@ class DashboardViewModel(
         } catch (e: Exception) {
             Log.e("SOS_AUDIT", "Error fetching removal notifications: ${e.message}")
         }
+    }
+
+    private fun observePairingNotifications(userCode: String) {
+        pairingNotificationRealtime?.stop()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                fetchPairingNotifications(userCode)
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+
+        pairingNotificationRealtime = SupabaseRealtimeClient("pairing_notifications", "target_user_id", userCode) { type, record ->
+            viewModelScope.launch(Dispatchers.IO) {
+                fetchPairingNotifications(userCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun fetchPairingNotifications(userCode: String) {
+        try {
+            val rows = SupabaseApi.select("pairing_notifications", "target_user_id=eq.$userCode")
+            if (rows.length() > 0) {
+                for (i in 0 until rows.length()) {
+                    val obj = rows.getJSONObject(i)
+                    val notif = com.rohit.sosafe.data.contracts.PairingNotification(
+                        notificationId = obj.optString("notification_id"),
+                        targetUserId = obj.optString("target_user_id"),
+                        fromUserId = obj.optString("from_user_id"),
+                        fromUserName = obj.optString("from_user_name"),
+                        type = obj.optString("type"),
+                        createdAt = obj.optLong("created_at")
+                    )
+
+                    // 1. Immediately refresh contacts live
+                    fetchUserContacts(userCode)
+
+                    // 2. Set newly linked notice for UI banner/dialog
+                    _dashboardState.update { it.copy(newlyLinkedNotice = notif) }
+
+                    // 3. Delete notification from Supabase so it only triggers once
+                    viewModelScope.launch(Dispatchers.IO) {
+                        userManager.dismissPairingNotification(notif.notificationId)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SOS_AUDIT", "Error fetching pairing notifications: ${e.message}")
+        }
+    }
+
+    fun clearNewlyLinkedNotice() {
+        _dashboardState.update { it.copy(newlyLinkedNotice = null) }
     }
 
     private fun observeServiceState() {

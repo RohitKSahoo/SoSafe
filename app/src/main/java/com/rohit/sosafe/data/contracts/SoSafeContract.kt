@@ -102,6 +102,15 @@ data class RemovalNotification(
     val createdAt: Long = 0L
 )
 
+data class PairingNotification(
+    val notificationId: String = "",
+    val targetUserId: String = "",
+    val fromUserId: String = "",
+    val fromUserName: String = "",
+    val type: String = "LINKED",
+    val createdAt: Long = 0L
+)
+
 data class SosSession(
     val sessionId: String = "",
     val senderId: String = "",

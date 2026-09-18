@@ -95,10 +95,11 @@ fun DashboardScreen(
     var selectedHistoryContact by remember { mutableStateOf<Contact?>(null) }
     var showMyQrDialog by remember { mutableStateOf(false) }
     var showQrScannerDialog by remember { mutableStateOf(false) }
+    var showPairingMenuDialog by remember { mutableStateOf(false) }
     var scannedQrData by remember { mutableStateOf<ScannedQrData?>(null) }
     var showNamePromptDialog by remember { mutableStateOf(false) }
-    var sharerNameInput by remember { mutableStateOf("") }
     val context = LocalContext.current
+    var sharerNameInput by remember { mutableStateOf(com.rohit.sosafe.data.UserManager(context).getUserName()) }
 
     LaunchedEffect(deepLinkPairData) {
         if (deepLinkPairData != null) {
@@ -291,6 +292,76 @@ fun DashboardScreen(
         )
     }
 
+    // Pairing Options Modal (Scan QR or View/Share Link)
+    if (showPairingMenuDialog) {
+        AlertDialog(
+            onDismissRequest = { showPairingMenuDialog = false },
+            title = {
+                Text(
+                    text = "LINK EMERGENCY CONTACT",
+                    color = PureWhite,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Choose how you want to link with your contact:",
+                        color = LightGrey,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Button(
+                        onClick = {
+                            showPairingMenuDialog = false
+                            showQrScannerDialog = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black)
+                    ) {
+                        Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("SCAN CONTACT'S QR CODE", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            showPairingMenuDialog = false
+                            showMyQrDialog = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = PureWhite)
+                    ) {
+                        Icon(imageVector = Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("MY QR & SHARE INVITE LINK", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showPairingMenuDialog = false }) {
+                    Text("CANCEL", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(8.dp)
+        )
+    }
+
     // QR Camera Scanner Dialog
     if (showQrScannerDialog) {
         QrScannerDialog(
@@ -355,6 +426,44 @@ fun DashboardScreen(
             dismissButton = {
                 TextButton(onClick = { scannedQrData = null }) {
                     Text("CANCEL", color = LightGrey)
+                }
+            },
+            containerColor = DarkGrey,
+            shape = RoundedCornerShape(4.dp)
+        )
+    }
+
+    // Bi-Directional Auto-Pairing Notice Dialog (Inviter is notified when Invitee links)
+    if (state.newlyLinkedNotice != null) {
+        val linkedNotif = state.newlyLinkedNotice!!
+        AlertDialog(
+            onDismissRequest = { viewModel.clearNewlyLinkedNotice() },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = SuccessGreen,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("CONTACT LINKED", color = PureWhite, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Text(
+                    text = "${linkedNotif.fromUserName} (${linkedNotif.fromUserId}) has linked with you as an emergency contact!",
+                    color = LightGrey,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.clearNewlyLinkedNotice() },
+                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text("GREAT", fontWeight = FontWeight.Bold)
                 }
             },
             containerColor = DarkGrey,
@@ -759,13 +868,16 @@ fun DashboardScreen(
                                         onRenameClick = { contactToRename = it },
                                         onRemoveClick = { contactToRemove = it },
                                         onStopSOS = onStopSOS,
-                                        onShowQrClick = { showMyQrDialog = true }
+                                        onShowQrClick = { showMyQrDialog = true },
+                                        onScanQrClick = { showQrScannerDialog = true },
+                                        onAddContactClick = { showPairingMenuDialog = true }
                                     )
                                 } else {
                                     GuardianDashboard(
                                         state = state, 
-                                        onAddContactClick = onAddContactClick,
+                                        onAddContactClick = { showPairingMenuDialog = true },
                                         onScanQrClick = { showQrScannerDialog = true },
+                                        onShowQrClick = { showMyQrDialog = true },
                                         onContactClick = { contact ->
                                             if (contact.status == ContactStatus.EMERGENCY && contact.activeSession != null) {
                                                 selectedMonitoringSession = contact.activeSession
@@ -972,7 +1084,9 @@ fun SenderDashboard(
     onRenameClick: (Contact) -> Unit,
     onRemoveClick: (Contact) -> Unit,
     onStopSOS: () -> Unit,
-    onShowQrClick: () -> Unit
+    onShowQrClick: () -> Unit,
+    onScanQrClick: () -> Unit = {},
+    onAddContactClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -1017,7 +1131,7 @@ fun SenderDashboard(
         UserCodeCard(
             userCode = state.userCode,
             onShowQrClick = onShowQrClick,
-            onScanQrClick = null
+            onScanQrClick = onScanQrClick
         )
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -1119,7 +1233,8 @@ fun SenderDashboard(
         ContactsSection(
             title = "LINKED GUARDIANS (Tap name for history)", 
             contacts = state.contacts, 
-            showAddButton = false,
+            showAddButton = true,
+            onAddContactClick = onAddContactClick,
             onContactClick = onContactClick,
             onRenameClick = onRenameClick,
             onRemoveClick = onRemoveClick
@@ -1132,6 +1247,7 @@ fun GuardianDashboard(
     state: DashboardState, 
     onAddContactClick: () -> Unit,
     onScanQrClick: () -> Unit,
+    onShowQrClick: () -> Unit = {},
     onContactClick: (Contact) -> Unit,
     onRenameClick: (Contact) -> Unit,
     onRemoveClick: (Contact) -> Unit
@@ -1178,7 +1294,7 @@ fun GuardianDashboard(
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         UserCodeCard(
             userCode = state.userCode,
-            onShowQrClick = null,
+            onShowQrClick = onShowQrClick,
             onScanQrClick = onScanQrClick
         )
         Spacer(modifier = Modifier.height(24.dp))

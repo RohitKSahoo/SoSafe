@@ -17,10 +17,21 @@ class UserManager(val context: Context) {
 
     private val tag = "UserManager"
     private val userCodeKey = "user_code"
+    private val userNameKey = "user_name"
     private val prefsName = "sosafe_prefs"
 
     fun hasPermission(permission: String): Boolean {
         return context.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    fun getUserName(): String {
+        val sharedPrefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        return sharedPrefs.getString(userNameKey, "") ?: ""
+    }
+
+    fun saveUserName(name: String) {
+        val sharedPrefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        sharedPrefs.edit().putString(userNameKey, name.trim()).apply()
     }
 
     fun getUserCodeSync(): String? {
@@ -202,7 +213,8 @@ class UserManager(val context: Context) {
     }
 
     /**
-     * Instantly pairs two devices symmetrically via QR Code scanning without waiting for approval.
+     * Instantly pairs two devices symmetrically via QR Code scanning or Universal Deep Link.
+     * Updates contact lists & names on both sides and sends a live Pairing Notification to the target.
      */
     suspend fun pairViaQrCode(targetUserId: String, customNameForTarget: String = ""): Result<Unit> = withContext(Dispatchers.IO) {
         val myCode = getUserCode()
@@ -211,19 +223,57 @@ class UserManager(val context: Context) {
             return@withContext Result.failure(Exception("Cannot link to your own device ID"))
         }
         try {
-            if (customNameForTarget.isNotBlank()) {
-                updateContactName(targetCode, customNameForTarget)
-            }
+            val myName = getUserName().ifBlank { "User $myCode" }
+            val targetName = customNameForTarget.ifBlank { "User $targetCode" }
 
-            // 1. Add targetCode to my contacts
+            // 1. Update local custom name for target
+            updateContactName(targetCode, targetName)
+
+            // 2. Add targetCode to my contacts on Supabase
             addContactToUserList(myCode, targetCode)
-            // 2. Add myCode to targetCode contacts
-            addContactToUserList(targetCode, myCode)
 
-            Log.d(tag, "Instant QR pairing completed between $myCode and $targetCode")
+            // 3. Add myCode to targetCode contacts on Supabase & update my name in target's contact_names
+            addContactToUserList(targetCode, myCode)
+            updateContactNameForUser(targetCode, myCode, myName)
+
+            // 4. Send real-time Pairing Notification to target user
+            val notifId = "${myCode}_${targetCode}_${System.currentTimeMillis()}"
+            val notifJson = JSONObject().apply {
+                put("notification_id", notifId)
+                put("target_user_id", targetCode)
+                put("from_user_id", myCode)
+                put("from_user_name", myName)
+                put("type", "LINKED")
+                put("created_at", System.currentTimeMillis())
+            }
+            SupabaseApi.upsert("pairing_notifications", notifJson, onConflict = "notification_id")
+
+            Log.d(tag, "Instant pairing completed between $myCode and $targetCode (Notified target as: $myName)")
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(tag, "Error during QR pairing: ${e.message}")
+            Log.e(tag, "Error during pairing: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    private fun updateContactNameForUser(forUserId: String, contactId: String, name: String) {
+        val rows = SupabaseApi.select("users", "user_id=eq.$forUserId")
+        if (rows.length() > 0) {
+            val userObj = rows.getJSONObject(0)
+            val namesObj = userObj.optJSONObject("contact_names") ?: JSONObject()
+            namesObj.put(contactId, name)
+            val updateObj = JSONObject().apply { put("contact_names", namesObj) }
+            SupabaseApi.update("users", "user_id=eq.$forUserId", updateObj)
+        }
+    }
+
+    suspend fun dismissPairingNotification(notificationId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            SupabaseApi.delete("pairing_notifications", "notification_id=eq.$notificationId")
+            Log.d(tag, "Pairing notification dismissed: $notificationId")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(tag, "Error dismissing pairing notification: ${e.message}")
             Result.failure(e)
         }
     }

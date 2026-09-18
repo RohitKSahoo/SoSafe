@@ -27,7 +27,6 @@ import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.data.AppModeManager
 import com.rohit.sosafe.data.StreamingModeManager
 import com.rohit.sosafe.ui.ModeSelectionScreen
-import com.rohit.sosafe.ui.AddContactDialog
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.utils.ServiceState
@@ -118,7 +117,17 @@ class MainActivity : ComponentActivity() {
                 var currentAppMode by remember { mutableStateOf(appModeManager.getAppMode()) }
 
                 if (currentAppMode == null) {
-                    ModeSelectionScreen { selectedMode ->
+                    var myCode by remember { mutableStateOf(userManager.getUserCodeSync() ?: "") }
+                    LaunchedEffect(Unit) {
+                        if (myCode.isBlank()) {
+                            myCode = userManager.getUserCode()
+                        }
+                    }
+                    ModeSelectionScreen(
+                        userCode = myCode,
+                        initialName = userManager.getUserName()
+                    ) { selectedMode, userName ->
+                        userManager.saveUserName(userName)
                         appModeManager.setAppMode(selectedMode)
                         RoleManager.role = selectedMode.name
                         currentAppMode = selectedMode
@@ -228,37 +237,16 @@ fun MainScreen(
         }
     }
 
-    var showAddContactDialog by remember { mutableStateOf(false) }
-
     DashboardScreen(
         viewModel = viewModel,
         appMode = appMode,
         deepLinkPairData = deepLinkPairData,
         onClearDeepLinkPairData = onClearDeepLinkPairData,
-        onAddContactClick = { showAddContactDialog = true },
+        onAddContactClick = {},
         onTriggerSOS = onTriggerSOS,
         onStopSOS = onStopSOS,
         onStopService = onStopService,
         onSwitchMode = onSwitchMode,
         modifier = modifier
     )
-
-    if (showAddContactDialog) {
-        val context = androidx.compose.ui.platform.LocalContext.current
-        AddContactDialog(
-            onDismiss = { showAddContactDialog = false },
-            onValidateCode = { code, onResult ->
-                viewModel.validateUserCode(code, onResult)
-            },
-            onAdd = { code, name, onResult ->
-                viewModel.sendPairingRequest(code, name) { result ->
-                    onResult(result)
-                    if (result.isSuccess) {
-                        android.widget.Toast.makeText(context, "Pairing request sent to $code", android.widget.Toast.LENGTH_LONG).show()
-                        showAddContactDialog = false
-                    }
-                }
-            }
-        )
-    }
 }

@@ -48,155 +48,122 @@ Create a folder named `docs/pair` (or `pair/` depending on your Pages root) and 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SoSafe - Connect & Protect</title>
+    <title>SoSafe — Peer Safety Network</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            background-color: #0A0A0A;
-            color: #FFFFFF;
+            background-color: #080808;
+            color: #E0E0E0;
+            font-family: 'JetBrains Mono', monospace, -apple-system, sans-serif;
+            min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            min-height: 100vh;
-            padding: 20px;
+            padding: 32px 16px;
         }
         .card {
-            background: #141414;
-            border: 1px solid #282828;
-            border-radius: 12px;
-            padding: 32px 24px;
-            max-width: 420px;
+            background: #0F0F0F;
+            border: 1px solid #1F1F1F;
+            max-width: 480px;
             width: 100%;
-            text-align: center;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            padding: 36px 32px;
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.8);
+            position: relative;
         }
-        .logo {
-            font-size: 28px;
-            font-weight: 900;
-            letter-spacing: 2px;
-            color: #FFFFFF;
-            margin-bottom: 24px;
-        }
-        .logo span {
-            color: #E53935;
-        }
-        .badge {
-            display: inline-block;
-            background: #1F2937;
-            color: #10B981;
-            font-weight: bold;
-            font-size: 12px;
-            padding: 4px 12px;
-            border-radius: 9999px;
-            margin-bottom: 16px;
-        }
-        h1 {
-            font-size: 20px;
-            font-weight: 700;
-            margin-bottom: 12px;
-        }
-        p {
-            color: #9CA3AF;
-            font-size: 14px;
-            line-height: 1.6;
-            margin-bottom: 24px;
-        }
-        .btn {
-            display: block;
-            width: 100%;
-            padding: 14px;
-            border-radius: 6px;
-            font-size: 15px;
-            font-weight: 700;
-            text-decoration: none;
-            cursor: pointer;
-            margin-bottom: 12px;
-            transition: transform 0.1s, opacity 0.2s;
-        }
-        .btn:active {
-            transform: scale(0.98);
-        }
-        .btn-primary {
-            background: #FFFFFF;
-            color: #000000;
-        }
-        .btn-secondary {
-            background: #1F2937;
-            color: #FFFFFF;
-            border: 1px solid #374151;
-        }
-        .steps {
-            background: #181818;
-            border-radius: 8px;
-            padding: 16px;
-            text-align: left;
-            margin-top: 20px;
-            font-size: 13px;
-            color: #D1D5DB;
-        }
-        .steps ol {
-            padding-left: 18px;
-        }
-        .steps li {
-            margin-bottom: 8px;
-        }
+        .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 40px; }
+        .brand-logo { font-size: 16px; font-weight: 800; letter-spacing: 6px; }
+        .brand-logo .red { color: #FF2B2B; }
+        .brand-logo .white { color: #FFFFFF; }
+        .header-meta { font-size: 10px; color: #777777; text-align: right; line-height: 1.4; letter-spacing: 2px; font-weight: 500; }
+        .title { font-size: 38px; font-weight: 400; color: #FFFFFF; line-height: 1.15; letter-spacing: -0.5px; margin-bottom: 20px; }
+        .title .red-text { color: #FF3333; font-weight: 500; }
+        .description { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; color: #8E8E93; line-height: 1.6; margin-bottom: 32px; }
+        .inviter-box { background: #141414; border: 1px solid #222222; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .inviter-info { display: flex; flex-direction: column; gap: 6px; }
+        .inviter-label { font-size: 10px; color: #707070; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; }
+        .inviter-id { font-size: 18px; color: #FFFFFF; letter-spacing: 2px; font-weight: 600; }
+        .copy-btn { background: transparent; border: none; color: #888888; cursor: pointer; padding: 8px; display: flex; align-items: center; justify-content: center; }
+        .copy-btn:hover { color: #FFFFFF; }
+        .btn-open { display: flex; justify-content: space-between; align-items: center; width: 100%; background: #FF2E2E; color: #000000; padding: 18px 22px; font-size: 13px; font-weight: 800; letter-spacing: 2px; text-decoration: none; cursor: pointer; margin-bottom: 12px; border: none; }
+        .btn-open:hover { background: #FF4444; }
+        .btn-open .arrow { font-size: 18px; font-weight: bold; }
+        .btn-download { display: flex; justify-content: center; align-items: center; gap: 12px; width: 100%; background: #111111; color: #C0C0C0; border: 1px solid #222222; padding: 16px 20px; font-size: 12px; font-weight: 700; letter-spacing: 2px; text-decoration: none; cursor: pointer; margin-bottom: 32px; }
+        .btn-download:hover { border-color: #383838; color: #FFFFFF; background: #161616; }
+        .divider { border: none; border-top: 1px solid #1C1C1C; margin-bottom: 28px; }
+        .steps-header { font-size: 10px; color: #707070; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; margin-bottom: 24px; }
+        .step-item { display: flex; gap: 18px; margin-bottom: 6px; }
+        .step-indicator { display: flex; flex-direction: column; align-items: center; width: 26px; }
+        .step-num { width: 26px; height: 26px; background: #151515; border: 1px solid #222222; color: #CCCCCC; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; }
+        .step-line { width: 1px; height: 28px; background: #222222; margin: 4px 0; }
+        .step-text { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12.5px; color: #8E8E93; line-height: 1.5; padding-top: 3px; }
+        .footer { border-top: 1px solid #1C1C1C; margin-top: 32px; padding-top: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+        .footer-brand { font-size: 10px; color: #888888; letter-spacing: 1.5px; font-weight: 700; }
+        .footer-tagline { font-size: 9px; color: #555555; letter-spacing: 1.5px; font-weight: 600; }
+        .footer-badge { font-size: 11px; color: #666666; letter-spacing: 1px; }
+        .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #FFFFFF; color: #000000; padding: 8px 16px; font-size: 12px; font-weight: 700; letter-spacing: 1px; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; }
+        .toast.show { opacity: 1; }
     </style>
 </head>
 <body>
-
 <div class="card">
-    <div class="logo">SO<span>SAFE</span></div>
-    
-    <div class="badge">SAFETY INVITE</div>
-
-    <h1 id="inviterHeader">Emergency Contact Invite</h1>
-    <p id="inviterBody">You have been invited to link as an emergency guardian on SoSafe.</p>
-
-    <!-- Primary Action for Installed Users -->
-    <a id="openAppBtn" class="btn btn-primary" href="#">OPEN IN SOSAFE APP</a>
-
-    <!-- Primary Action for New Users -->
-    <a id="downloadApkBtn" class="btn btn-secondary" href="https://github.com/RohitKSahoo/SoSafe/releases/latest" target="_blank">
-        DOWNLOAD LATEST APK
+    <div class="header">
+        <div class="brand-logo"><span class="red">SOS</span><span class="white">AFE</span></div>
+        <div class="header-meta">PEER<br>SAFETY<br>NETWORK</div>
+    </div>
+    <h1 class="title">Connect<br>with <span class="red-text" id="targetUserName">User</span></h1>
+    <p class="description" id="targetUserDesc">You have been invited to link on SoSafe for real-time emergency audio streaming and mutual safety.</p>
+    <div class="inviter-box">
+        <div class="inviter-info">
+            <span class="inviter-label">INVITER USER ID</span>
+            <span class="inviter-id" id="targetUserId">--------</span>
+        </div>
+        <button class="copy-btn" id="copyIdBtn" title="Copy ID">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        </button>
+    </div>
+    <a id="openAppBtn" class="btn-open" href="#"><span>OPEN IN SOSAFE APP</span><span class="arrow">&rarr;</span></a>
+    <a id="downloadApkBtn" class="btn-download" href="https://github.com/RohitKSahoo/SoSafe/releases/latest" target="_blank" rel="noopener noreferrer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        <span>DOWNLOAD LATEST APK</span>
     </a>
-
-    <div class="steps">
-        <strong>First time on SoSafe?</strong>
-        <ol>
-            <li>Tap <b>Download Latest APK</b> above.</li>
-            <li>Install and open the app once to initialize.</li>
-            <li>Return here and tap <b>Open in SoSafe App</b> (or re-tap the invite link) to complete linking.</li>
-        </ol>
+    <hr class="divider">
+    <div class="steps-header">FIRST TIME USING SOSAFE?</div>
+    <div class="step-item"><div class="step-indicator"><div class="step-num">1</div><div class="step-line"></div></div><div class="step-text">Download latest APK and install the app.</div></div>
+    <div class="step-item"><div class="step-indicator"><div class="step-num">2</div><div class="step-line"></div></div><div class="step-text">Launch the app once to complete initial permissions.</div></div>
+    <div class="step-item"><div class="step-indicator"><div class="step-num">3</div></div><div class="step-text">Return here and tap Open in SoSafe App (or re-click the invite link) to complete linking.</div></div>
+    <div class="footer">
+        <div><div class="footer-brand">SOSAFE</div><div class="footer-tagline">FREE · OPEN SOURCE · SAFER TOGETHER</div></div>
+        <div class="footer-badge">[ 01 ]</div>
     </div>
 </div>
-
+<div class="toast" id="toast">COPIED TO CLIPBOARD</div>
 <script>
-    // Extract query parameters
     const params = new URLSearchParams(window.location.search);
-    const id = params.get('id') || '';
-    const name = params.get('name') || 'Someone';
-
-    const safeSchemeUrl = `sosafe://pair?id=${encodeURIComponent(id)}&name=${encodeURIComponent(name)}`;
-    const releaseUrl = 'https://github.com/RohitKSahoo/SoSafe/releases/latest';
-
-    // Update UI elements
-    if (id) {
-        document.getElementById('inviterHeader').innerText = `Connect with ${name}`;
-        document.getElementById('inviterBody').innerText = `${name} (${id}) wants to link with you on SoSafe for real-time emergency safety & audio streaming.`;
-    }
-
-    const openBtn = document.getElementById('openAppBtn');
-    openBtn.href = safeSchemeUrl;
-
-    // Automatic trigger: Try opening the app via custom scheme
-    window.location.href = safeSchemeUrl;
+    const id = (params.get('id') || params.get('code') || '').trim().toUpperCase();
+    const rawName = params.get('name') || '';
+    let displayName = rawName ? decodeURIComponent(rawName).trim() : (id ? `User ${id.substring(0, 4)}` : 'Rohit');
+    const displayId = id || '9DAGSGC2';
+    document.getElementById('targetUserName').innerText = displayName;
+    document.getElementById('targetUserId').innerText = displayId;
+    document.getElementById('targetUserDesc').innerText = `${displayName} (${displayId}) wants to link with you on SoSafe for real-time emergency audio streaming and mutual safety.`;
+    const safeSchemeUrl = `sosafe://pair?id=${encodeURIComponent(displayId)}&name=${encodeURIComponent(displayName)}`;
+    const intentUrl = `intent://pair?id=${encodeURIComponent(displayId)}&name=${encodeURIComponent(displayName)}#Intent;scheme=sosafe;package=com.rohit.sosafe;end;`;
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const targetUrl = isAndroid ? intentUrl : safeSchemeUrl;
+    document.getElementById('openAppBtn').href = targetUrl;
+    const copyBtn = document.getElementById('copyIdBtn');
+    const toast = document.getElementById('toast');
+    copyBtn.addEventListener('click', function() {
+        navigator.clipboard.writeText(displayId).then(function() {
+            toast.classList.add('show');
+            setTimeout(function() { toast.classList.remove('show'); }, 1800);
+        });
+    });
+    if (id) { setTimeout(function() { window.location.href = targetUrl; }, 400); }
 </script>
-
 </body>
 </html>
 ```
