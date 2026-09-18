@@ -5,6 +5,8 @@ import android.net.Uri
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,10 +26,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -37,6 +41,102 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.ui.theme.*
 import com.rohit.sosafe.utils.QrCodeUtils
+import kotlin.math.sqrt
+import java.util.Random
+
+/**
+ * Low-density live constellation background with subtle floating points and gentle connecting lines.
+ */
+@Composable
+fun LiveConstellationBackground(
+    modifier: Modifier = Modifier,
+    particleCount: Int = 15,
+    pointColor: Color = PureWhite,
+    lineColor: Color = PureWhite,
+    maxLineDistanceDp: Float = 125f
+) {
+    val density = LocalDensity.current
+    val maxLineDistancePx = with(density) { maxLineDistanceDp.dp.toPx() }
+
+    val particles = remember {
+        val rand = Random(55)
+        List(particleCount) {
+            ConstellationParticle(
+                x = rand.nextFloat(),
+                y = rand.nextFloat(),
+                vx = (rand.nextFloat() - 0.5f) * 0.0009f,
+                vy = (rand.nextFloat() - 0.5f) * 0.0009f,
+                radius = 1.2f + rand.nextFloat() * 1.5f
+            )
+        }
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "ConstellationTicks")
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "pulse"
+    )
+
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+
+        for (p in particles) {
+            p.x += p.vx
+            p.y += p.vy
+            if (p.x < 0f) { p.x = 0f; p.vx = -p.vx }
+            if (p.x > 1f) { p.x = 1f; p.vx = -p.vx }
+            if (p.y < 0f) { p.y = 0f; p.vy = -p.vy }
+            if (p.y > 1f) { p.y = 1f; p.vy = -p.vy }
+        }
+
+        // Draw connecting lines
+        for (i in 0 until particles.size) {
+            val p1 = particles[i]
+            val x1 = p1.x * w
+            val y1 = p1.y * h
+
+            for (j in i + 1 until particles.size) {
+                val p2 = particles[j]
+                val x2 = p2.x * w
+                val y2 = p2.y * h
+
+                val dx = x2 - x1
+                val dy = y2 - y1
+                val dist = sqrt(dx * dx + dy * dy)
+                if (dist < maxLineDistancePx) {
+                    val alpha = (1f - (dist / maxLineDistancePx)) * 0.13f
+                    drawLine(
+                        color = lineColor.copy(alpha = alpha),
+                        start = Offset(x1, y1),
+                        end = Offset(x2, y2),
+                        strokeWidth = 1f
+                    )
+                }
+            }
+
+            // Draw node point
+            drawCircle(
+                color = pointColor.copy(alpha = 0.30f),
+                radius = p1.radius,
+                center = Offset(x1, y1)
+            )
+        }
+    }
+}
+
+private class ConstellationParticle(
+    var x: Float,
+    var y: Float,
+    var vx: Float,
+    var vy: Float,
+    val radius: Float
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +162,7 @@ fun ModeSelectionScreen(
     val qrBitmap = remember(formattedCode, nameInput) {
         val encodedName = Uri.encode(nameInput.trim().ifBlank { "User $formattedCode" })
         val qrPayload = "sosafe://pair?id=$formattedCode&name=$encodedName"
-        QrCodeUtils.generateQrCodeBitmap(qrPayload, 380)
+        QrCodeUtils.generateQrCodeBitmap(qrPayload, 480)
     }
 
     // Safe loading of the application launcher icon across all Android versions
@@ -79,8 +179,8 @@ fun ModeSelectionScreen(
         color = DarkBackground
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Dotted grid background identical to Dashboard and Settings screens
-            GridBackground()
+            // Low-density live constellation background
+            LiveConstellationBackground()
 
             AnimatedContent(
                 targetState = selectedRole,
@@ -105,13 +205,9 @@ fun ModeSelectionScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        // App Icon with sharp edges
+                        // App Icon without background box and enlarged size
                         Box(
-                            modifier = Modifier
-                                .size(68.dp)
-                                .clip(RoundedCornerShape(0.dp))
-                                .background(DarkGrey)
-                                .border(1.dp, MediumGrey, RoundedCornerShape(0.dp)),
+                            modifier = Modifier.size(76.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             if (appIconDrawable != null) {
@@ -122,22 +218,22 @@ fun ModeSelectionScreen(
                                             scaleType = ImageView.ScaleType.FIT_CENTER
                                         }
                                     },
-                                    modifier = Modifier.size(52.dp)
+                                    modifier = Modifier.size(72.dp)
                                 )
                             } else {
                                 Icon(
                                     imageVector = Icons.Default.Shield,
                                     contentDescription = "SoSafe App Icon",
                                     tint = PureWhite,
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(48.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(18.dp))
 
                         Text(
-                            text = "SO-SAFE",
+                            text = "SOSAFE",
                             style = MaterialTheme.typography.headlineLarge,
                             color = PureWhite,
                             fontWeight = FontWeight.Black,
@@ -248,7 +344,7 @@ fun ModeSelectionScreen(
                         }
                     }
                 } else {
-                    // STEP 2: PROFILE IDENTITY & DOCKED CTA (Sharp Edges + Centered Content + Bottom Dock CTA)
+                    // STEP 2: PROFILE IDENTITY & DOCKED CTA (Ungrouped QR, Pill CTAs, White Button)
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -259,7 +355,7 @@ fun ModeSelectionScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .align(Alignment.TopStart)
-                                .padding(top = 20.dp),
+                                .padding(top = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(onClick = { selectedRole = null }) {
@@ -278,12 +374,12 @@ fun ModeSelectionScreen(
                             )
                         }
 
-                        // CENTER: Centered Form & QR Preview
+                        // CENTER / SCROLL: Form & Ungrouped QR Section (moved upward)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .align(Alignment.Center)
-                                .padding(top = 64.dp, bottom = 120.dp)
+                                .align(Alignment.TopCenter)
+                                .padding(top = 68.dp, bottom = 100.dp)
                                 .verticalScroll(rememberScrollState()),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
@@ -294,13 +390,13 @@ fun ModeSelectionScreen(
                                 textAlign = TextAlign.Center
                             )
 
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(14.dp))
 
-                            // Name Input Field with sharp edges
+                            // Name Input Field (moved upward)
                             OutlinedTextField(
                                 value = nameInput,
                                 onValueChange = { nameInput = it },
-                                label = { Text("Your Name (e.g. Alice, Dad)", color = LightGrey) },
+                                label = { Text("Your Name..", color = LightGrey) },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(0.dp),
@@ -313,109 +409,104 @@ fun ModeSelectionScreen(
                                 )
                             )
 
+                            Spacer(modifier = Modifier.height(28.dp))
+
+                            // UNGROUPED QR SECTION (No outer Card box)
+                            Text(
+                                text = "YOUR SAFETY PAIRING QR",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = LightGrey,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            // 3.1: Larger QR Code
+                            if (qrBitmap != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(210.dp)
+                                        .clip(RoundedCornerShape(0.dp))
+                                        .background(Color.White)
+                                        .padding(8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Image(
+                                        bitmap = qrBitmap.asImageBitmap(),
+                                        contentDescription = "My Pairing QR Code",
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            Text(
+                                text = "Device ID: $formattedCode",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = PureWhite,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+
                             Spacer(modifier = Modifier.height(20.dp))
 
-                            // QR Code Preview Card with sharp edges
-                            Card(
+                            // 3.1: Both CTAs below QR in separate equal-sized pills
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(0.dp),
-                                colors = CardDefaults.cardColors(containerColor = DarkGrey),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey)
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Column(
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(inviteLink))
+                                        Toast.makeText(context, "Invite link copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                    },
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+                                        .weight(1f)
+                                        .height(46.dp),
+                                    shape = RoundedCornerShape(999.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PureWhite)
                                 ) {
-                                    Text(
-                                        text = "YOUR SAFETY PAIRING QR",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = LightGrey,
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 1.sp
-                                    )
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("COPY", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
 
-                                    Spacer(modifier = Modifier.height(12.dp))
-
-                                    if (qrBitmap != null) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(150.dp)
-                                                .clip(RoundedCornerShape(0.dp))
-                                                .background(Color.White)
-                                                .padding(6.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Image(
-                                                bitmap = qrBitmap.asImageBitmap(),
-                                                contentDescription = "My Pairing QR Code",
-                                                modifier = Modifier.fillMaxSize()
+                                Button(
+                                    onClick = {
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(
+                                                Intent.EXTRA_TEXT,
+                                                "Add me as your emergency safety contact on SoSafe:\n$inviteLink"
                                             )
                                         }
-                                    }
-
-                                    Spacer(modifier = Modifier.height(12.dp))
-
-                                    Text(
-                                        text = "Device ID: $formattedCode",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = PureWhite,
-                                        fontWeight = FontWeight.Bold
+                                        context.startActivity(Intent.createChooser(shareIntent, "Share SoSafe Safety Link"))
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(46.dp),
+                                    shape = RoundedCornerShape(999.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = PureWhite,
+                                        contentColor = Color.Black
                                     )
-
-                                    Spacer(modifier = Modifier.height(16.dp))
-
-                                    // Action buttons with sharp edges
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        OutlinedButton(
-                                            onClick = {
-                                                clipboardManager.setText(AnnotatedString(inviteLink))
-                                                Toast.makeText(context, "Invite link copied to clipboard!", Toast.LENGTH_SHORT).show()
-                                            },
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(0.dp),
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, MediumGrey),
-                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = PureWhite)
-                                        ) {
-                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("COPY", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                                    type = "text/plain"
-                                                    putExtra(
-                                                        Intent.EXTRA_TEXT,
-                                                        "Add me as your emergency safety contact on SoSafe:\n$inviteLink"
-                                                    )
-                                                }
-                                                context.startActivity(Intent.createChooser(shareIntent, "Share SoSafe Safety Link"))
-                                            },
-                                            modifier = Modifier.weight(1.3f),
-                                            shape = RoundedCornerShape(0.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Color.Black)
-                                        ) {
-                                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("SHARE LINK", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("SHARE LINK", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
 
-                        // BOTTOM: Docked "CONTINUE TO DASHBOARD" CTA Button
+                        // BOTTOM: Docked "CONTINUE TO DASHBOARD" CTA Button (3.2: White Button)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .align(Alignment.BottomCenter)
-                                .padding(bottom = 20.dp),
+                                .padding(bottom = 16.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Button(
@@ -425,11 +516,11 @@ fun ModeSelectionScreen(
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(56.dp),
+                                    .height(54.dp),
                                 shape = RoundedCornerShape(0.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (targetMode == AppMode.SENDER) DangerRed else SuccessGreen,
-                                    contentColor = PureWhite
+                                    containerColor = PureWhite,
+                                    contentColor = Color.Black
                                 )
                             ) {
                                 Text(
@@ -440,7 +531,7 @@ fun ModeSelectionScreen(
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
 
                             Text(
                                 text = "You can also scan contact QRs anytime from the dashboard.",

@@ -1921,12 +1921,17 @@ fun SystemConfigSection(
 
 @Composable
 fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
-    NavigationBar(containerColor = Black, tonalElevation = 0.dp) {
+    NavigationBar(
+        modifier = Modifier.height(58.dp),
+        containerColor = Black,
+        tonalElevation = 0.dp,
+        windowInsets = WindowInsets(0, 0, 0, 0)
+    ) {
         NavigationBarItem(
             selected = selectedTab == 0,
             onClick = { onTabSelected(0) },
-            icon = { Icon(Icons.Default.GridView, null) },
-            label = { Text("DASHBOARD") },
+            icon = { Icon(Icons.Default.GridView, null, modifier = Modifier.size(20.dp)) },
+            label = { Text("DASHBOARD", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = PureWhite, 
                 selectedTextColor = PureWhite, 
@@ -1938,8 +1943,8 @@ fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
         NavigationBarItem(
             selected = selectedTab == 1,
             onClick = { onTabSelected(1) },
-            icon = { Icon(Icons.Default.Settings, null) },
-            label = { Text("SYSTEM") },
+            icon = { Icon(Icons.Default.Settings, null, modifier = Modifier.size(20.dp)) },
+            label = { Text("SYSTEM", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = PureWhite, 
                 selectedTextColor = PureWhite, 
