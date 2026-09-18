@@ -1916,37 +1916,44 @@ fun SystemConfigSection(
 
 @Composable
 fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
-    NavigationBar(
-        modifier = Modifier.height(60.dp),
-        containerColor = Black,
-        tonalElevation = 0.dp,
-        windowInsets = WindowInsets(0, 0, 0, 0)
+    Surface(
+        color = Black,
+        modifier = Modifier.fillMaxWidth()
     ) {
-        NavigationBarItem(
-            selected = selectedTab == 0,
-            onClick = { onTabSelected(0) },
-            icon = { Icon(Icons.Default.GridView, null, modifier = Modifier.size(20.dp)) },
-            label = { Text("DASHBOARD", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = PureWhite, 
-                selectedTextColor = PureWhite, 
-                unselectedIconColor = LightGrey, 
-                unselectedTextColor = LightGrey,
-                indicatorColor = Color.Transparent
+        NavigationBar(
+            modifier = Modifier
+                .navigationBarsPadding()
+                .height(60.dp),
+            containerColor = Black,
+            tonalElevation = 0.dp,
+            windowInsets = WindowInsets(0, 0, 0, 0)
+        ) {
+            NavigationBarItem(
+                selected = selectedTab == 0,
+                onClick = { onTabSelected(0) },
+                icon = { Icon(Icons.Default.GridView, null, modifier = Modifier.size(20.dp)) },
+                label = { Text("DASHBOARD", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = PureWhite, 
+                    selectedTextColor = PureWhite, 
+                    unselectedIconColor = LightGrey, 
+                    unselectedTextColor = LightGrey,
+                    indicatorColor = Color.Transparent
+                )
             )
-        )
-        NavigationBarItem(
-            selected = selectedTab == 1,
-            onClick = { onTabSelected(1) },
-            icon = { Icon(Icons.Default.Settings, null, modifier = Modifier.size(20.dp)) },
-            label = { Text("SYSTEM", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = PureWhite, 
-                selectedTextColor = PureWhite, 
-                unselectedIconColor = LightGrey, 
-                unselectedTextColor = LightGrey,
-                indicatorColor = Color.Transparent
+            NavigationBarItem(
+                selected = selectedTab == 1,
+                onClick = { onTabSelected(1) },
+                icon = { Icon(Icons.Default.Settings, null, modifier = Modifier.size(20.dp)) },
+                label = { Text("SYSTEM", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = PureWhite, 
+                    selectedTextColor = PureWhite, 
+                    unselectedIconColor = LightGrey, 
+                    unselectedTextColor = LightGrey,
+                    indicatorColor = Color.Transparent
+                )
             )
-        )
+        }
     }
 }
