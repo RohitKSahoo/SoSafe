@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SoSafe - Connect & Protect</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        body {
+            background-color: #0A0A0A;
+            color: #FFFFFF;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 24px 16px;
+        }
+        .container {
+            background: #121212;
+            border: 1px solid #242424;
+            border-radius: 16px;
+            padding: 36px 24px;
+            max-width: 440px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+        }
+        .brand {
+            font-size: 32px;
+            font-weight: 900;
+            letter-spacing: 2px;
+            color: #FFFFFF;
+            margin-bottom: 24px;
+        }
+        .brand span {
+            color: #E53935;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #1C241E;
+            color: #10B981;
+            border: 1px solid #065F46;
+            font-weight: 700;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            padding: 5px 14px;
+            border-radius: 9999px;
+            margin-bottom: 20px;
+            text-transform: uppercase;
+        }
+        h1 {
+            font-size: 22px;
+            font-weight: 800;
+            margin-bottom: 12px;
+            color: #F3F4F6;
+        }
+        p.subtitle {
+            color: #9CA3AF;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 28px;
+        }
+        .code-box {
+            background: #000000;
+            border: 1px dashed #374151;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .code-label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #6B7280;
+            text-transform: uppercase;
+        }
+        .code-value {
+            font-size: 16px;
+            font-weight: 900;
+            letter-spacing: 1px;
+            color: #10B981;
+        }
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 800;
+            text-decoration: none;
+            cursor: pointer;
+            margin-bottom: 12px;
+            transition: all 0.15s ease-in-out;
+            border: none;
+        }
+        .btn:active {
+            transform: scale(0.98);
+        }
+        .btn-primary {
+            background: #FFFFFF;
+            color: #000000;
+        }
+        .btn-primary:hover {
+            background: #E5E7EB;
+        }
+        .btn-secondary {
+            background: #1F2937;
+            color: #FFFFFF;
+            border: 1px solid #374151;
+        }
+        .btn-secondary:hover {
+            background: #2D3748;
+        }
+        .steps {
+            background: #171717;
+            border: 1px solid #262626;
+            border-radius: 10px;
+            padding: 20px 16px;
+            text-align: left;
+            margin-top: 24px;
+            font-size: 13px;
+            color: #D1D5DB;
+        }
+        .steps strong {
+            display: block;
+            margin-bottom: 10px;
+            color: #FFFFFF;
+            font-size: 13px;
+        }
+        .steps ol {
+            padding-left: 20px;
+        }
+        .steps li {
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+        .steps li:last-child {
+            margin-bottom: 0;
+        }
+        .footer {
+            margin-top: 24px;
+            font-size: 11px;
+            color: #6B7280;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="brand">SO<span>SAFE</span></div>
+    
+    <div class="badge">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-3z"/>
+        </svg>
+        Safety Invite
+    </div>
+
+    <h1 id="inviterHeader">Emergency Contact Invite</h1>
+    <p class="subtitle" id="inviterBody">You have been invited to link as a contact on SoSafe for real-time safety monitoring.</p>
+
+    <div class="code-box" id="codeBox" style="display: none;">
+        <span class="code-label">Inviter User ID</span>
+        <span class="code-value" id="codeDisplay">------</span>
+    </div>
+
+    <!-- For Installed Users -->
+    <a id="openAppBtn" class="btn btn-primary" href="#">
+        OPEN IN SOSAFE APP
+    </a>
+
+    <!-- For Users who need to install -->
+    <a id="downloadApkBtn" class="btn btn-secondary" href="https://github.com/RohitKSahoo/SoSafe/releases/latest" target="_blank">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        DOWNLOAD LATEST APK
+    </a>
+
+    <div class="steps">
+        <strong>First time using SoSafe?</strong>
+        <ol>
+            <li>Tap <b>Download Latest APK</b> and install the app.</li>
+            <li>Launch the app once to complete initial permissions.</li>
+            <li>Return here and tap <b>Open in SoSafe App</b> (or re-click the invite link) to complete linking.</li>
+        </ol>
+    </div>
+
+    <div class="footer">
+        SoSafe Peer-to-Peer Emergency Shield • Free & Open Source
+    </div>
+</div>
+
+<script>
+    // Extract query parameters from URL
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id') || '';
+    const name = params.get('name') || '';
+
+    const displayName = name ? decodeURIComponent(name) : (id ? `User ${id}` : 'Someone');
+    const safeSchemeUrl = `sosafe://pair?id=${encodeURIComponent(id)}&name=${encodeURIComponent(displayName)}`;
+    const intentUrl = `intent://pair?id=${encodeURIComponent(id)}&name=${encodeURIComponent(displayName)}#Intent;scheme=sosafe;package=com.rohit.sosafe;end;`;
+
+    if (id) {
+        document.getElementById('inviterHeader').innerText = `Connect with ${displayName}`;
+        document.getElementById('inviterBody').innerText = `${displayName} (${id}) wants to link with you on SoSafe for real-time emergency audio streaming and mutual safety.`;
+        document.getElementById('codeBox').style.display = 'flex';
+        document.getElementById('codeDisplay').innerText = id;
+    }
+
+    const openBtn = document.getElementById('openAppBtn');
+    
+    // Choose Android Intent scheme if on Android browser, else custom scheme
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const targetUrl = isAndroid ? intentUrl : safeSchemeUrl;
+    openBtn.href = targetUrl;
+
+    // Automatic attempt to open the app
+    if (id) {
+        setTimeout(function() {
+            window.location.href = targetUrl;
+        }, 300);
+    }
+</script>
+
+</body>
+</html>

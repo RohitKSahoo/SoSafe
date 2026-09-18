@@ -252,7 +252,7 @@ fun DashboardScreen(
                             focusedIndicatorColor = PureWhite,
                             unfocusedIndicatorColor = MediumGrey
                         ),
-                        placeholder = { Text("E.g. Rohit, Mom, Dad", color = MediumGrey) },
+                        placeholder = { Text("E.g. Mom, Dad", color = MediumGrey) },
                         singleLine = true
                     )
                 }
