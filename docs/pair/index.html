@@ -392,9 +392,10 @@
     document.getElementById('targetUserId').innerText = displayId;
     document.getElementById('targetUserDesc').innerText = `${displayName} (${displayId}) wants to link with you on SoSafe for real-time emergency audio streaming and mutual safety.`;
 
-    // Setup app link URLs
+    // Setup app link URLs with browser_fallback_url to prevent Google Play Store "Item not found" errors
+    const fallbackUrl = window.location.href;
     const safeSchemeUrl = `sosafe://pair?id=${encodeURIComponent(displayId)}&name=${encodeURIComponent(displayName)}`;
-    const intentUrl = `intent://pair?id=${encodeURIComponent(displayId)}&name=${encodeURIComponent(displayName)}#Intent;scheme=sosafe;package=com.rohit.sosafe;end;`;
+    const intentUrl = `intent://pair?id=${encodeURIComponent(displayId)}&name=${encodeURIComponent(displayName)}#Intent;scheme=sosafe;package=com.rohit.sosafe;S.browser_fallback_url=${encodeURIComponent(fallbackUrl)};end;`;
     
     const isAndroid = /Android/i.test(navigator.userAgent);
     const targetUrl = isAndroid ? intentUrl : safeSchemeUrl;
@@ -425,13 +426,6 @@
             }, 1800);
         });
     });
-
-    // Auto-open attempt on mobile devices if link is loaded with parameters
-    if (id) {
-        setTimeout(function() {
-            window.location.href = targetUrl;
-        }, 400);
-    }
 </script>
 
 </body>
