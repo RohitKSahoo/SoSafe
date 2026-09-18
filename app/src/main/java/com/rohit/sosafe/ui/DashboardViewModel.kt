@@ -38,7 +38,9 @@ class DashboardViewModel(
     private var userRealtime: SupabaseRealtimeClient? = null
     private var pairingRealtime: SupabaseRealtimeClient? = null
     private var removalRealtime: SupabaseRealtimeClient? = null
+    private var pairingNotificationRealtime: SupabaseRealtimeClient? = null
     private var sessionsRealtime: SupabaseRealtimeClient? = null
+    private var targetedPairingRequestId: String? = null
 
     init {
         observeNetworkState()
@@ -102,6 +104,7 @@ class DashboardViewModel(
             observeUserContacts(code)
             observePairingRequests(code)
             observeRemovalNotifications(code)
+            observePairingNotifications(code)
         }
     }
 
@@ -186,18 +189,42 @@ class DashboardViewModel(
         try {
             val rows = SupabaseApi.select("pairing_requests", "to_user_id=eq.$userCode&status=eq.PENDING")
             val list = mutableListOf<PairingRequest>()
+            val now = System.currentTimeMillis()
+            val maxTtlMs = 10 * 60 * 1000L // 10 minutes
+
             for (i in 0 until rows.length()) {
                 val obj = rows.getJSONObject(i)
-                list.add(
-                    PairingRequest(
-                        requestId = obj.optString("request_id"),
-                        fromUserId = obj.optString("from_user_id"),
-                        fromUserName = obj.optString("from_user_name"),
-                        toUserId = obj.optString("to_user_id"),
-                        status = obj.optString("status"),
-                        createdAt = obj.optLong("created_at")
-                    )
+                val req = PairingRequest(
+                    requestId = obj.optString("request_id"),
+                    fromUserId = obj.optString("from_user_id"),
+                    fromUserName = obj.optString("from_user_name"),
+                    toUserId = obj.optString("to_user_id"),
+                    status = obj.optString("status"),
+                    createdAt = obj.optLong("created_at")
                 )
+
+                if (now - req.createdAt > maxTtlMs) {
+                    // Automatically update Supabase to EXPIRED in background
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            val updateJson = JSONObject().apply {
+                                put("status", SoSafeContract.Status.EXPIRED)
+                            }
+                            SupabaseApi.update("pairing_requests", "request_id=eq.${req.requestId}", updateJson)
+                        } catch (e: Exception) {
+                            Log.w("SOS_AUDIT", "Error updating expired request: ${e.message}")
+                        }
+                    }
+                    cancelPairingNotification(req.requestId)
+
+                    // If user tapped on this expired request via notification, surface expired notice
+                    if (targetedPairingRequestId == req.requestId) {
+                        _dashboardState.update { it.copy(expiredPairingNotice = req) }
+                        targetedPairingRequestId = null
+                    }
+                } else {
+                    list.add(req)
+                }
             }
             _dashboardState.update { it.copy(pendingPairingRequests = list) }
         } catch (e: Exception) {
@@ -242,6 +269,59 @@ class DashboardViewModel(
         } catch (e: Exception) {
             Log.e("SOS_AUDIT", "Error fetching removal notifications: ${e.message}")
         }
+    }
+
+    private fun observePairingNotifications(userCode: String) {
+        pairingNotificationRealtime?.stop()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                fetchPairingNotifications(userCode)
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+
+        pairingNotificationRealtime = SupabaseRealtimeClient("pairing_notifications", "target_user_id", userCode) { type, record ->
+            viewModelScope.launch(Dispatchers.IO) {
+                fetchPairingNotifications(userCode)
+            }
+        }.apply { start() }
+    }
+
+    private fun fetchPairingNotifications(userCode: String) {
+        try {
+            val rows = SupabaseApi.select("pairing_notifications", "target_user_id=eq.$userCode")
+            if (rows.length() > 0) {
+                for (i in 0 until rows.length()) {
+                    val obj = rows.getJSONObject(i)
+                    val notif = com.rohit.sosafe.data.contracts.PairingNotification(
+                        notificationId = obj.optString("notification_id"),
+                        targetUserId = obj.optString("target_user_id"),
+                        fromUserId = obj.optString("from_user_id"),
+                        fromUserName = obj.optString("from_user_name"),
+                        type = obj.optString("type"),
+                        createdAt = obj.optLong("created_at")
+                    )
+
+                    // 1. Immediately refresh contacts live
+                    fetchUserContacts(userCode)
+
+                    // 2. Set newly linked notice for UI banner/dialog
+                    _dashboardState.update { it.copy(newlyLinkedNotice = notif) }
+
+                    // 3. Delete notification from Supabase so it only triggers once
+                    viewModelScope.launch(Dispatchers.IO) {
+                        userManager.dismissPairingNotification(notif.notificationId)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SOS_AUDIT", "Error fetching pairing notifications: ${e.message}")
+        }
+    }
+
+    fun clearNewlyLinkedNotice() {
+        _dashboardState.update { it.copy(newlyLinkedNotice = null) }
     }
 
     private fun observeServiceState() {
@@ -349,6 +429,7 @@ class DashboardViewModel(
     }
 
     fun acceptPairingRequest(request: PairingRequest, customName: String = "") {
+        cancelPairingNotification(request.requestId)
         viewModelScope.launch(Dispatchers.IO) {
             val res = userManager.acceptPairingRequest(request.requestId, request.fromUserId, customName)
             if (res.isSuccess) {
@@ -360,12 +441,59 @@ class DashboardViewModel(
     }
 
     fun declinePairingRequest(request: PairingRequest) {
+        cancelPairingNotification(request.requestId)
         viewModelScope.launch(Dispatchers.IO) {
             val res = userManager.declinePairingRequest(request.requestId)
             if (res.isSuccess) {
                 val code = userManager.getUserCode()
                 fetchPairingRequests(code)
             }
+        }
+    }
+
+    fun onPairingNotificationOpened(requestId: String, fromUserId: String, fromUserName: String, createdAt: Long) {
+        val now = System.currentTimeMillis()
+        val maxTtlMs = 10 * 60 * 1000L
+        cancelPairingNotification(requestId)
+
+        if (now - createdAt > maxTtlMs) {
+            val expiredReq = PairingRequest(
+                requestId = requestId,
+                fromUserId = fromUserId,
+                fromUserName = fromUserName,
+                createdAt = createdAt,
+                status = SoSafeContract.Status.EXPIRED
+            )
+            _dashboardState.update { it.copy(expiredPairingNotice = expiredReq) }
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val updateJson = JSONObject().apply {
+                        put("status", SoSafeContract.Status.EXPIRED)
+                    }
+                    SupabaseApi.update("pairing_requests", "request_id=eq.$requestId", updateJson)
+                } catch (e: Exception) {
+                    Log.w("SOS_AUDIT", "Error marking request as expired: ${e.message}")
+                }
+            }
+        } else {
+            targetedPairingRequestId = requestId
+            viewModelScope.launch(Dispatchers.IO) {
+                val code = userManager.getUserCode()
+                fetchPairingRequests(code)
+            }
+        }
+    }
+
+    fun clearExpiredNotice() {
+        _dashboardState.update { it.copy(expiredPairingNotice = null) }
+    }
+
+    private fun cancelPairingNotification(requestId: String) {
+        try {
+            val nm = userManager.context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            nm.cancel(requestId.hashCode())
+        } catch (e: Exception) {
+            Log.w("SOS_AUDIT", "Error cancelling notification: ${e.message}")
         }
     }
 

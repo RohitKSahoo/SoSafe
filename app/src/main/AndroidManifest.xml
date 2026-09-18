@@ -73,10 +73,43 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.SoSafe">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Custom URI Scheme: sosafe://pair?id=...&name=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="sosafe"
+                    android:host="pair" />
+            </intent-filter>
+
+            <!-- Web Link: https://rohitksahoo.github.io/SoSafe/pair?id=...&name=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="rohitksahoo.github.io"
+                    android:pathPrefix="/SoSafe/pair" />
+            </intent-filter>
+
+            <!-- Universal Fallback: https://sosafe.app/pair?id=...&name=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="sosafe.app"
+                    android:pathPrefix="/pair" />
             </intent-filter>
         </activity>
 

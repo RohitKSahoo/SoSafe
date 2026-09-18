@@ -58,6 +58,7 @@ object SoSafeContract {
         const val PENDING = "PENDING"
         const val ACCEPTED = "ACCEPTED"
         const val REJECTED = "REJECTED"
+        const val EXPIRED = "EXPIRED"
     }
 
     // --- Dynamic Path Helpers ---
@@ -98,6 +99,15 @@ data class RemovalNotification(
     val removerId: String = "",
     val removerName: String = "",
     val targetUserId: String = "",
+    val createdAt: Long = 0L
+)
+
+data class PairingNotification(
+    val notificationId: String = "",
+    val targetUserId: String = "",
+    val fromUserId: String = "",
+    val fromUserName: String = "",
+    val type: String = "LINKED",
     val createdAt: Long = 0L
 )
 

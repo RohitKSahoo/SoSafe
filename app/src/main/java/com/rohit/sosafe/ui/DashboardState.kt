@@ -37,5 +37,7 @@ data class DashboardState(
     val selectedUserRecordings: List<RecordingInfo> = emptyList(),
     val selectedPlaybackRecording: RecordingInfo? = null,
     val streamingMode: StreamingMode = StreamingMode.HYBRID,
-    val remoteVideoTrack: org.webrtc.VideoTrack? = null
+    val remoteVideoTrack: org.webrtc.VideoTrack? = null,
+    val expiredPairingNotice: PairingRequest? = null,
+    val newlyLinkedNotice: com.rohit.sosafe.data.contracts.PairingNotification? = null
 )

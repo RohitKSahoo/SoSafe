@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
@@ -27,9 +28,9 @@ import com.rohit.sosafe.data.AppMode
 import com.rohit.sosafe.data.AppModeManager
 import com.rohit.sosafe.data.StreamingModeManager
 import com.rohit.sosafe.ui.ModeSelectionScreen
-import com.rohit.sosafe.ui.AddContactDialog
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.utils.RecordingManager
+import com.rohit.sosafe.utils.ServiceState
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -39,10 +40,61 @@ class MainActivity : ComponentActivity() {
     private lateinit var appModeManager: AppModeManager
     private lateinit var streamingModeManager: StreamingModeManager
     private lateinit var recordingManager: RecordingManager
+    private var dashboardViewModel: DashboardViewModel? = null
+    private var pendingPairingIntent: Intent? = null
+    private var deepLinkPairData by mutableStateOf<com.rohit.sosafe.ui.ScannedQrData?>(null)
+
+    override fun onStart() {
+        super.onStart()
+        ServiceState.setAppInForeground(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        ServiceState.setAppInForeground(false)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePairingIntent(intent)
+    }
+
+    private fun handlePairingIntent(intent: Intent?) {
+        if (intent == null) return
+
+        if (intent.action == SOSForegroundService.ACTION_OPEN_PAIRING) {
+            val reqId = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_REQUEST_ID) ?: return
+            val fromId = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_FROM_ID) ?: ""
+            val fromName = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_FROM_NAME) ?: ""
+            val createdAt = intent.getLongExtra(SOSForegroundService.EXTRA_PAIRING_CREATED_AT, 0L)
+
+            dashboardViewModel?.onPairingNotificationOpened(reqId, fromId, fromName, createdAt) ?: run {
+                pendingPairingIntent = intent
+            }
+        } else if (intent.action == Intent.ACTION_VIEW) {
+            val uri = intent.data
+            if (uri != null) {
+                val id = uri.getQueryParameter("id")?.replace("-", "")?.trim()?.uppercase()
+                val name = uri.getQueryParameter("name")?.trim() ?: "User $id"
+                if (!id.isNullOrBlank()) {
+                    val myCode = userManager.getUserCodeSync()?.replace("-", "")?.trim()?.uppercase()
+                    if (myCode != null && id == myCode) {
+                        android.widget.Toast.makeText(this, "Cannot link with your own device.", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        deepLinkPairData = com.rohit.sosafe.ui.ScannedQrData(userId = id, userName = name)
+                    }
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
 
         userManager = UserManager(applicationContext)
         appModeManager = AppModeManager(applicationContext)
@@ -69,7 +121,17 @@ class MainActivity : ComponentActivity() {
                 var currentAppMode by remember { mutableStateOf(appModeManager.getAppMode()) }
 
                 if (currentAppMode == null) {
-                    ModeSelectionScreen { selectedMode ->
+                    var myCode by remember { mutableStateOf(userManager.getUserCodeSync() ?: "") }
+                    LaunchedEffect(Unit) {
+                        if (myCode.isBlank()) {
+                            myCode = userManager.getUserCode()
+                        }
+                    }
+                    ModeSelectionScreen(
+                        userCode = myCode,
+                        initialName = userManager.getUserName()
+                    ) { selectedMode, userName ->
+                        userManager.saveUserName(userName)
                         appModeManager.setAppMode(selectedMode)
                         RoleManager.role = selectedMode.name
                         currentAppMode = selectedMode
@@ -79,11 +141,22 @@ class MainActivity : ComponentActivity() {
                     val viewModel: DashboardViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
                         factory = DashboardViewModelFactory(userManager, appModeManager, streamingModeManager, recordingManager, networkMonitor)
                     )
+                    dashboardViewModel = viewModel
+
+                    LaunchedEffect(viewModel) {
+                        pendingPairingIntent?.let {
+                            handlePairingIntent(it)
+                            pendingPairingIntent = null
+                        }
+                        handlePairingIntent(intent)
+                    }
                     
                     MainScreen(
                         userManager = userManager,
                         viewModel = viewModel,
                         appMode = currentAppMode!!,
+                        deepLinkPairData = deepLinkPairData,
+                        onClearDeepLinkPairData = { deepLinkPairData = null },
                         onPermissionsGranted = { 
                             // START SERVICE FOR BOTH: SENDER (Protection) & GUARDIAN (Listening)
                             startGuardianService() 
@@ -132,6 +205,8 @@ fun MainScreen(
     userManager: UserManager,
     viewModel: DashboardViewModel,
     appMode: AppMode,
+    deepLinkPairData: com.rohit.sosafe.ui.ScannedQrData? = null,
+    onClearDeepLinkPairData: () -> Unit = {},
     onPermissionsGranted: () -> Unit,
     onTriggerSOS: () -> Unit,
     onStopSOS: () -> Unit,
@@ -166,35 +241,16 @@ fun MainScreen(
         }
     }
 
-    var showAddContactDialog by remember { mutableStateOf(false) }
-
     DashboardScreen(
         viewModel = viewModel,
         appMode = appMode,
-        onAddContactClick = { showAddContactDialog = true },
+        deepLinkPairData = deepLinkPairData,
+        onClearDeepLinkPairData = onClearDeepLinkPairData,
+        onAddContactClick = {},
         onTriggerSOS = onTriggerSOS,
         onStopSOS = onStopSOS,
         onStopService = onStopService,
         onSwitchMode = onSwitchMode,
         modifier = modifier
     )
-
-    if (showAddContactDialog) {
-        val context = androidx.compose.ui.platform.LocalContext.current
-        AddContactDialog(
-            onDismiss = { showAddContactDialog = false },
-            onValidateCode = { code, onResult ->
-                viewModel.validateUserCode(code, onResult)
-            },
-            onAdd = { code, name, onResult ->
-                viewModel.sendPairingRequest(code, name) { result ->
-                    onResult(result)
-                    if (result.isSuccess) {
-                        android.widget.Toast.makeText(context, "Pairing request sent to $code", android.widget.Toast.LENGTH_LONG).show()
-                        showAddContactDialog = false
-                    }
-                }
-            }
-        )
-    }
 }
