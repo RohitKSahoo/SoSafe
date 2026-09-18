@@ -1922,7 +1922,7 @@ fun SystemConfigSection(
 @Composable
 fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
     NavigationBar(
-        modifier = Modifier.height(58.dp),
+        modifier = Modifier.height(56.dp),
         containerColor = Black,
         tonalElevation = 0.dp,
         windowInsets = WindowInsets(0, 0, 0, 0)
@@ -1935,9 +1935,9 @@ fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = PureWhite, 
                 selectedTextColor = PureWhite, 
-                indicatorColor = MediumGrey, 
                 unselectedIconColor = LightGrey, 
-                unselectedTextColor = LightGrey
+                unselectedTextColor = LightGrey,
+                indicatorColor = Color.Transparent
             )
         )
         NavigationBarItem(
@@ -1948,9 +1948,9 @@ fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = PureWhite, 
                 selectedTextColor = PureWhite, 
-                indicatorColor = MediumGrey, 
                 unselectedIconColor = LightGrey, 
-                unselectedTextColor = LightGrey
+                unselectedTextColor = LightGrey,
+                indicatorColor = Color.Transparent
             )
         )
     }
