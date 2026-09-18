@@ -233,11 +233,6 @@ fun DashboardScreen(
             title = { Text("ENTER YOUR NAME", color = PureWhite, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text(
-                        "Enter your name so the other person knows who is sharing this link:",
-                        color = LightGrey,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("YOUR NAME", color = PureWhite, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(6.dp))
@@ -1922,7 +1917,7 @@ fun SystemConfigSection(
 @Composable
 fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
     NavigationBar(
-        modifier = Modifier.height(56.dp),
+        modifier = Modifier.height(60.dp),
         containerColor = Black,
         tonalElevation = 0.dp,
         windowInsets = WindowInsets(0, 0, 0, 0)

@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.ImageView
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -143,6 +144,11 @@ fun ModeSelectionScreen(
         }
     }
 
+    // Intercept phone back button / gesture to navigate from Step 2 back to Step 1
+    BackHandler(enabled = selectedRole != null) {
+        selectedRole = null
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = DarkBackground
@@ -170,7 +176,9 @@ fun ModeSelectionScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 24.dp),
+                            .statusBarsPadding()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 24.dp, vertical = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
@@ -317,8 +325,10 @@ fun ModeSelectionScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
+                            .statusBarsPadding()
+                            .navigationBarsPadding()
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 24.dp, vertical = 16.dp)
+                            .padding(horizontal = 24.dp, vertical = 12.dp)
                     ) {
                         // 1. Top Header Row: Back + SOSAFE + PEER SAFETY NETWORK
                         Row(
@@ -331,15 +341,16 @@ fun ModeSelectionScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(
                                     onClick = { selectedRole = null },
-                                    modifier = Modifier.size(36.dp)
+                                    modifier = Modifier.size(40.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                         contentDescription = "Back",
-                                        tint = PureWhite
+                                        tint = PureWhite,
+                                        modifier = Modifier.size(24.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Row {
                                     Text(
                                         text = "SOS",
@@ -394,21 +405,13 @@ fun ModeSelectionScreen(
                             letterSpacing = 1.5.sp
                         )
 
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Text(
-                            text = "Enter your name so your contacts recognize you when linking.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = LightGrey
-                        )
-
                         Spacer(modifier = Modifier.height(20.dp))
 
                         // 3. Name Input Field with Person Icon & Sharp Edges
                         OutlinedTextField(
                             value = nameInput,
                             onValueChange = { nameInput = it },
-                            placeholder = { Text("Your Name...", color = LightGrey) },
+                            placeholder = { Text("Enter your name (required) ", color = LightGrey) },
                             leadingIcon = {
                                 Icon(
                                     imageVector = Icons.Default.Person,
@@ -460,15 +463,15 @@ fun ModeSelectionScreen(
 
                         Spacer(modifier = Modifier.height(20.dp))
 
-                        // 5. Large QR Code Box (Sharp edges)
+                        // 5. Large QR Code Box (Sharp edges with minimized padding)
                         if (qrBitmap != null) {
                             Box(
                                 modifier = Modifier
-                                    .size(230.dp)
+                                    .size(240.dp)
                                     .align(Alignment.CenterHorizontally)
                                     .clip(RoundedCornerShape(0.dp))
                                     .background(Color.White)
-                                    .padding(10.dp),
+                                    .padding(4.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Image(
@@ -530,12 +533,12 @@ fun ModeSelectionScreen(
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        // 7. Action Buttons (COPY & SHARE LINK) - Sharp edges
+                        // 7. Action Buttons (COPY LINK & SHARE LINK) - Sharp edges
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            // Left COPY button (Dark)
+                            // Left COPY LINK button (Dark)
                             Button(
                                 onClick = {
                                     clipboardManager.setText(AnnotatedString(inviteLink))
@@ -559,7 +562,7 @@ fun ModeSelectionScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "COPY",
+                                    text = "COPY LINK",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
                                     letterSpacing = 1.sp
@@ -686,7 +689,7 @@ fun ModeSelectionScreen(
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(24.dp))
                     }
                 }
             }
