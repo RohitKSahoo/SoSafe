@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var recordingManager: RecordingManager
     private var dashboardViewModel: DashboardViewModel? = null
     private var pendingPairingIntent: Intent? = null
+    private var deepLinkPairData by mutableStateOf<com.rohit.sosafe.ui.ScannedQrData?>(null)
 
     override fun onStart() {
         super.onStart()
@@ -60,7 +61,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handlePairingIntent(intent: Intent?) {
-        if (intent?.action == SOSForegroundService.ACTION_OPEN_PAIRING) {
+        if (intent == null) return
+
+        if (intent.action == SOSForegroundService.ACTION_OPEN_PAIRING) {
             val reqId = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_REQUEST_ID) ?: return
             val fromId = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_FROM_ID) ?: ""
             val fromName = intent.getStringExtra(SOSForegroundService.EXTRA_PAIRING_FROM_NAME) ?: ""
@@ -68,6 +71,20 @@ class MainActivity : ComponentActivity() {
 
             dashboardViewModel?.onPairingNotificationOpened(reqId, fromId, fromName, createdAt) ?: run {
                 pendingPairingIntent = intent
+            }
+        } else if (intent.action == Intent.ACTION_VIEW) {
+            val uri = intent.data
+            if (uri != null) {
+                val id = uri.getQueryParameter("id")?.replace("-", "")?.trim()?.uppercase()
+                val name = uri.getQueryParameter("name")?.trim() ?: "User $id"
+                if (!id.isNullOrBlank()) {
+                    val myCode = userManager.getUserCodeSync()?.replace("-", "")?.trim()?.uppercase()
+                    if (myCode != null && id == myCode) {
+                        android.widget.Toast.makeText(this, "Cannot link with your own device.", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        deepLinkPairData = com.rohit.sosafe.ui.ScannedQrData(userId = id, userName = name)
+                    }
+                }
             }
         }
     }
@@ -125,6 +142,8 @@ class MainActivity : ComponentActivity() {
                         userManager = userManager,
                         viewModel = viewModel,
                         appMode = currentAppMode!!,
+                        deepLinkPairData = deepLinkPairData,
+                        onClearDeepLinkPairData = { deepLinkPairData = null },
                         onPermissionsGranted = { 
                             // START SERVICE FOR BOTH: SENDER (Protection) & GUARDIAN (Listening)
                             startGuardianService() 
@@ -173,6 +192,8 @@ fun MainScreen(
     userManager: UserManager,
     viewModel: DashboardViewModel,
     appMode: AppMode,
+    deepLinkPairData: com.rohit.sosafe.ui.ScannedQrData? = null,
+    onClearDeepLinkPairData: () -> Unit = {},
     onPermissionsGranted: () -> Unit,
     onTriggerSOS: () -> Unit,
     onStopSOS: () -> Unit,
@@ -212,6 +233,8 @@ fun MainScreen(
     DashboardScreen(
         viewModel = viewModel,
         appMode = appMode,
+        deepLinkPairData = deepLinkPairData,
+        onClearDeepLinkPairData = onClearDeepLinkPairData,
         onAddContactClick = { showAddContactDialog = true },
         onTriggerSOS = onTriggerSOS,
         onStopSOS = onStopSOS,
