@@ -87,6 +87,7 @@ fun DashboardScreen(
     val state by viewModel.state.collectAsState()
     val pagerState = rememberPagerState(pageCount = { 2 })
     val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     
     var showMonitoringScreen by remember { mutableStateOf(false) }
     var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
@@ -97,13 +98,34 @@ fun DashboardScreen(
     var showMyQrDialog by remember { mutableStateOf(false) }
     var showQrScannerDialog by remember { mutableStateOf(false) }
     var showPairingMenuDialog by remember { mutableStateOf(false) }
-    var scannedQrData by remember { mutableStateOf<ScannedQrData?>(null) }
+    var showNoGuardiansDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    val handleTriggerSOS: () -> Unit = {
+        if (state.contacts.isEmpty()) {
+            showNoGuardiansDialog = true
+        } else {
+            onTriggerSOS()
+        }
+    }
 
     LaunchedEffect(deepLinkPairData) {
         if (deepLinkPairData != null) {
-            scannedQrData = deepLinkPairData
+            val data = deepLinkPairData
             onClearDeepLinkPairData()
+            val targetId = data.userId.replace("-", "").trim().uppercase()
+            val targetName = data.userName.ifBlank { "User $targetId" }
+            viewModel.pairViaQrCode(targetId, targetName) { res ->
+                if (res.isSuccess) {
+                    Toast.makeText(context, "Linked with $targetName ($targetId) successfully!", Toast.LENGTH_SHORT).show()
+                } else {
+                    val errMsg = res.exceptionOrNull()?.message ?: "Unknown error"
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Pairing failed: $errMsg")
+                    }
+                    Toast.makeText(context, "Pairing failed: $errMsg", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -383,197 +405,92 @@ fun DashboardScreen(
         )
     }
 
-    // QR Camera Scanner Dialog
+    // QR Camera Scanner Dialog (Direct Auto-Pairing without naming prompt)
     if (showQrScannerDialog) {
         QrScannerDialog(
             onDismissRequest = { showQrScannerDialog = false },
             onQrScanned = { data ->
                 showQrScannerDialog = false
-                scannedQrData = data
+                val targetId = data.userId.replace("-", "").trim().uppercase()
+                val targetName = data.userName.ifBlank { "User $targetId" }
+                viewModel.pairViaQrCode(targetId, targetName) { res ->
+                    if (res.isSuccess) {
+                        Toast.makeText(context, "Linked with $targetName ($targetId) successfully!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val errMsg = res.exceptionOrNull()?.message ?: "Unknown error"
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("Pairing failed: $errMsg")
+                        }
+                        Toast.makeText(context, "Pairing failed: $errMsg", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         )
     }
 
-    // Scanned QR / Deep Link Naming Confirmation Dialog
-    if (scannedQrData != null) {
-        val data = scannedQrData!!
-        var customContactName by remember(data.userId) { mutableStateOf(data.userName.ifBlank { "" }) }
+    // No Guardians Linked Alert Dialog
+    if (showNoGuardiansDialog) {
         AlertDialog(
-            onDismissRequest = { scannedQrData = null },
-            title = { Text("LINK CONTACT", color = PureWhite, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text("Link with ${data.userName} (${data.userId})", color = LightGrey, style = MaterialTheme.typography.bodyMedium)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("NAME THIS CONTACT", color = PureWhite, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TextField(
-                        value = customContactName,
-                        onValueChange = { customContactName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Black,
-                            unfocusedContainerColor = Black,
-                            focusedTextColor = PureWhite,
-                            unfocusedTextColor = PureWhite,
-                            focusedIndicatorColor = PureWhite,
-                            unfocusedIndicatorColor = MediumGrey
-                        ),
-                        placeholder = { Text("Enter name (e.g. Mom, Rohit)", color = MediumGrey) },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val targetId = data.userId
-                        val nameToSave = customContactName.ifBlank { data.userName }
-                        scannedQrData = null
-                        viewModel.pairViaQrCode(targetId, nameToSave) { res ->
-                            if (res.isSuccess) {
-                                Toast.makeText(context, "Linked with $nameToSave successfully!", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "Pairing failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text("SAVE & LINK", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { scannedQrData = null }) {
-                    Text("CANCEL", color = LightGrey)
-                }
-            },
-            containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
-        )
-    }
-
-    // Bi-Directional Auto-Pairing Notice Dialog (Inviter is notified when Invitee links)
-    if (state.newlyLinkedNotice != null) {
-        val linkedNotif = state.newlyLinkedNotice!!
-        AlertDialog(
-            onDismissRequest = { viewModel.clearNewlyLinkedNotice() },
+            onDismissRequest = { showNoGuardiansDialog = false },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.CheckCircle,
+                        imageVector = Icons.Default.Warning,
                         contentDescription = null,
-                        tint = SuccessGreen,
+                        tint = DangerRed,
                         modifier = Modifier.size(24.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("CONTACT LINKED", color = PureWhite, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "NO GUARDIANS LINKED",
+                        color = PureWhite,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
                 }
             },
             text = {
                 Text(
-                    text = "${linkedNotif.fromUserName} (${linkedNotif.fromUserId}) has linked with you as an emergency contact!",
+                    text = "You cannot trigger an emergency SOS without at least one linked emergency contact. Link a guardian to share your live location and audio feed during emergencies.",
                     color = LightGrey,
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 20.sp
                 )
             },
             confirmButton = {
                 Button(
-                    onClick = { viewModel.clearNewlyLinkedNotice() },
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text("GREAT", fontWeight = FontWeight.Bold)
-                }
-            },
-            containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
-        )
-    }
-
-    // Auto popup on Sender device when a new Guardian links via QR code
-    var newlyLinkedContactToName by remember { mutableStateOf<Contact?>(null) }
-    val promptDismissedContacts = remember { mutableStateOf(setOf<String>()) }
-    
-    LaunchedEffect(state.contacts, appMode) {
-        if (appMode == AppMode.SENDER) {
-            val unrenamedContact = state.contacts.find { contact ->
-                (contact.name.startsWith("User ", ignoreCase = true) || contact.name.startsWith("USER_", ignoreCase = true)) &&
-                        !promptDismissedContacts.value.contains(contact.id)
-            }
-            if (unrenamedContact != null && newlyLinkedContactToName == null) {
-                newlyLinkedContactToName = unrenamedContact
-            }
-        }
-    }
-
-    if (newlyLinkedContactToName != null) {
-        val targetContact = newlyLinkedContactToName!!
-        var senderSideName by remember(targetContact.id) { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = {
-                promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
-                newlyLinkedContactToName = null
-            },
-            title = { Text("GUARDIAN LINKED", color = PureWhite, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text(
-                        "A new guardian (${targetContact.id}) has linked with your device.",
-                        color = LightGrey,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "NAME THIS GUARDIAN",
-                        color = PureWhite,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TextField(
-                        value = senderSideName,
-                        onValueChange = { senderSideName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Black,
-                            unfocusedContainerColor = Black,
-                            focusedTextColor = PureWhite,
-                            unfocusedTextColor = PureWhite,
-                            focusedIndicatorColor = PureWhite,
-                            unfocusedIndicatorColor = MediumGrey
-                        ),
-                        placeholder = { Text("Enter name...", color = MediumGrey) },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
                     onClick = {
-                        val nameToSet = senderSideName.ifBlank { targetContact.name }
-                        viewModel.renameContact(targetContact.id, nameToSet)
-                        promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
-                        newlyLinkedContactToName = null
+                        showNoGuardiansDialog = false
+                        showPairingMenuDialog = true
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
                     shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text("SAVE", fontWeight = FontWeight.Bold)
+                    Text("LINK GUARDIAN", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
-                    newlyLinkedContactToName = null
-                }) {
-                    Text("SKIP", color = LightGrey)
+                TextButton(onClick = { showNoGuardiansDialog = false }) {
+                    Text("CANCEL", color = LightGrey)
                 }
             },
             containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
+            shape = RoundedCornerShape(4.dp),
+            modifier = Modifier.border(1.dp, MediumGrey, RoundedCornerShape(4.dp))
         )
+    }
+
+    // Bi-Directional Auto-Pairing Notice (Inviter is notified with in-app Snackbar when Invitee links)
+    LaunchedEffect(state.newlyLinkedNotice) {
+        val linkedNotif = state.newlyLinkedNotice
+        if (linkedNotif != null) {
+            val fromName = linkedNotif.fromUserName.ifBlank { "User ${linkedNotif.fromUserId}" }
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Pairing successful with $fromName!")
+            }
+            Toast.makeText(context, "Pairing successful with $fromName!", Toast.LENGTH_SHORT).show()
+            viewModel.clearNewlyLinkedNotice()
+        }
     }
 
     // Alert Popup Handling
@@ -687,7 +604,12 @@ fun DashboardScreen(
                 Button(
                     onClick = { 
                         if (remainingSeconds > 0) {
+                            val peerName = if (contactCustomName.isNotBlank()) contactCustomName else request.fromUserName.ifBlank { "User ${request.fromUserId}" }
                             viewModel.acceptPairingRequest(request, contactCustomName)
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("Pairing successful with $peerName!")
+                            }
+                            Toast.makeText(context, "Pairing successful with $peerName!", Toast.LENGTH_SHORT).show()
                         } else {
                             viewModel.declinePairingRequest(request)
                         }
@@ -857,6 +779,19 @@ fun DashboardScreen(
                         }
                     ) 
                 },
+                snackbarHost = {
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    ) { snackbarData ->
+                        Snackbar(
+                            snackbarData = snackbarData,
+                            containerColor = DarkGrey,
+                            contentColor = PureWhite,
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                    }
+                },
                 containerColor = Color.Transparent,
                 modifier = modifier.fillMaxSize()
             ) { padding ->
@@ -918,7 +853,7 @@ fun DashboardScreen(
                                     appMode = appMode,
                                     streamingMode = state.streamingMode,
                                     onStreamingModeChange = { viewModel.setStreamingMode(it) },
-                                    onTriggerSOS = onTriggerSOS,
+                                    onTriggerSOS = handleTriggerSOS,
                                     onStopService = onStopService,
                                     onSwitchMode = onSwitchMode
                                 )
@@ -1008,9 +943,18 @@ fun SessionHistoryDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = SuccessGreen)
+                                    Icon(
+                                        imageVector = if (recording.hasVideo) Icons.Default.Videocam else Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = if (recording.hasVideo) PureWhite else SuccessGreen
+                                    )
                                     Spacer(modifier = Modifier.width(12.dp))
-                                    Text(recording.durationText, color = PureWhite, style = MaterialTheme.typography.bodyMedium)
+                                    Column {
+                                        Text(recording.durationText, color = PureWhite, style = MaterialTheme.typography.bodyMedium)
+                                        if (recording.hasVideo) {
+                                            Text("VIDEO ARCHIVE", color = LightGrey, style = MaterialTheme.typography.labelSmall, fontSize = 10.sp)
+                                        }
+                                    }
                                 }
 
                                 IconButton(
@@ -1414,9 +1358,9 @@ fun DndAccessCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(DarkCard)
-            .border(1.dp, DangerRed.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .clip(RoundedCornerShape(0.dp))
+            .background(DarkGrey)
+            .border(1.dp, MediumGrey, RoundedCornerShape(0.dp))
             .padding(20.dp)
     ) {
         Row(
@@ -1445,11 +1389,13 @@ fun DndAccessCard(
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onGrantClick,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
-            shape = RoundedCornerShape(4.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+            shape = RoundedCornerShape(0.dp)
         ) {
-            Text("ENABLE DND OVERRIDE", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("ENABLE DND OVERRIDE", fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
         }
     }
 }
@@ -1462,9 +1408,9 @@ fun OverlayAccessCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(DarkCard)
-            .border(1.dp, DangerRed.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .clip(RoundedCornerShape(0.dp))
+            .background(DarkGrey)
+            .border(1.dp, MediumGrey, RoundedCornerShape(0.dp))
             .padding(20.dp)
     ) {
         Row(
@@ -1493,11 +1439,13 @@ fun OverlayAccessCard(
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onGrantClick,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
-            shape = RoundedCornerShape(4.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+            shape = RoundedCornerShape(0.dp)
         ) {
-            Text("ENABLE APPEAR ON TOP", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("ENABLE APPEAR ON TOP", fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
         }
     }
 }

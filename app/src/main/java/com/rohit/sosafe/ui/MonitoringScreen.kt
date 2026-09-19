@@ -341,6 +341,7 @@ fun MonitoringScreen(
     }
 
     var showVideoFeedScreen by remember { mutableStateOf(false) }
+    var showRecordedVideoFile by remember { mutableStateOf<File?>(null) }
 
     LaunchedEffect(sessionState) {
         if (sessionState is SessionState.ENDED) {
@@ -354,8 +355,17 @@ fun MonitoringScreen(
         VideoFeedScreen(
             videoTrack = remoteVideoTrack,
             displayName = displayName,
+            sessionId = session?.sessionId ?: playbackInfo?.sessionId ?: "",
+            userId = session?.senderId ?: "",
             onSwitchCamera = { webrtcManager?.switchCamera() },
             onBack = { showVideoFeedScreen = false }
+        )
+    } else if (showRecordedVideoFile != null) {
+        RecordedVideoPlayerScreen(
+            videoFile = showRecordedVideoFile!!,
+            senderDisplayName = displayName,
+            recordingManager = recordingManager,
+            onClose = { showRecordedVideoFile = null }
         )
     } else {
         // UI Rendering
@@ -590,12 +600,61 @@ fun MonitoringScreen(
                     }
 
                     if (playbackInfo != null) {
-                        PlaybackPlayer(file = playbackInfo.file, senderDisplayName = displayName)
+                        if (playbackInfo.hasVideo && playbackInfo.videoFile != null && playbackInfo.videoFile.exists() && playbackInfo.videoFile.length() > 0) {
+                            val vFile = playbackInfo.videoFile
+                            val fileSizeMb = String.format(java.util.Locale.getDefault(), "%.1f MB", vFile.length() / (1024f * 1024f))
+                            Button(
+                                onClick = {
+                                    playbackController?.stopAndClear()
+                                    showRecordedVideoFile = vFile
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 12.dp)
+                            ) {
+                                Icon(Icons.Default.Videocam, contentDescription = null, tint = Black, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("WATCH RECORDED VIDEO ($fileSizeMb)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                        if (playbackInfo.file.exists() && playbackInfo.file.length() > 0 && playbackInfo.file.absolutePath != playbackInfo.videoFile?.absolutePath) {
+                            PlaybackPlayer(file = playbackInfo.file, senderDisplayName = displayName)
+                        }
                     } else if (sessionState is SessionState.ENDED) {
+                        val senderId = session?.senderId ?: "GUARDIAN"
+                        val sId = session?.sessionId ?: ""
+                        val recordedVideoFile = remember(sId) {
+                            if (sId.isNotBlank()) {
+                                val vFile = recordingManager.getVideoFile(senderId, sId)
+                                if (vFile.exists() && vFile.length() > 0) vFile else null
+                            } else null
+                        }
+
+                        if (recordedVideoFile != null) {
+                            val fileSizeMb = String.format(java.util.Locale.getDefault(), "%.1f MB", recordedVideoFile.length() / (1024f * 1024f))
+                            Button(
+                                onClick = {
+                                    playbackController?.stopAndClear()
+                                    showRecordedVideoFile = recordedVideoFile
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 12.dp)
+                            ) {
+                                Icon(Icons.Default.Videocam, contentDescription = null, tint = Black, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("WATCH RECORDED VIDEO ($fileSizeMb)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+
                         val fileToPlay = stitchedFile
                         if (fileToPlay != null) {
                             PlaybackPlayer(file = fileToPlay, senderDisplayName = displayName)
-                        } else {
+                        } else if (recordedVideoFile == null) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -821,3 +880,5 @@ fun PlaybackPlayer(file: File, senderDisplayName: String = "") {
         }
     }
 }
+
+

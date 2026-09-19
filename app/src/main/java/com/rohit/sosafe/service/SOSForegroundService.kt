@@ -92,7 +92,7 @@ class SOSForegroundService : Service() {
         const val ACTION_STOP_EMERGENCY = "ACTION_STOP_EMERGENCY"
         const val ACTION_GUARDIAN_SOS = "ACTION_GUARDIAN_SOS"
         const val ACTION_OPEN_PAIRING = "ACTION_OPEN_PAIRING"
-        const val PAIRING_CHANNEL_ID = "sosafe_pairing_channel"
+        const val PAIRING_CHANNEL_ID = "sosafe_pairing_channel_v2"
         const val EXTRA_PAIRING_REQUEST_ID = "EXTRA_PAIRING_REQUEST_ID"
         const val EXTRA_PAIRING_FROM_ID = "EXTRA_PAIRING_FROM_ID"
         const val EXTRA_PAIRING_FROM_NAME = "EXTRA_PAIRING_FROM_NAME"
@@ -223,6 +223,7 @@ class SOSForegroundService : Service() {
     private var pairingNotificationRealtimeService: com.rohit.sosafe.data.supabase.SupabaseRealtimeClient? = null
     private var pairingNotificationPollingJob: Job? = null
     private val notifiedPairingRequests = mutableSetOf<String>()
+    private val processedPairingNotificationIds = mutableSetOf<String>()
 
     private fun startUniversalMonitoring() {
         val myCode = userManager.getUserCodeSync() ?: return
@@ -283,25 +284,35 @@ class SOSForegroundService : Service() {
         try {
             val rows = SupabaseApi.select("pairing_notifications", "target_user_id=eq.$myCode")
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val now = System.currentTimeMillis()
 
             for (i in 0 until rows.length()) {
                 val obj = rows.getJSONObject(i)
                 val notifId = obj.optString("notification_id")
                 val fromUserId = obj.optString("from_user_id")
                 val fromUserName = obj.optString("from_user_name").ifBlank { "User $fromUserId" }
+                val createdAt = obj.optLong("created_at")
 
-                // Refresh contacts cache
+                // Always sync local contacts & cache immediately
                 fetchServiceUserContacts(myCode)
 
-                if (!ServiceState.isAppInForeground.value) {
-                    val notif = createContactLinkedNotification(fromUserId, fromUserName)
-                    notificationManager.notify(notifId.hashCode(), notif)
-                    Log.d(AUDIT_TAG, "PAIRING_LINKED_NOTIF_POSTED: Contact $fromUserName ($fromUserId)")
+                if (!processedPairingNotificationIds.contains(notifId)) {
+                    processedPairingNotificationIds.add(notifId)
+
+                    // Post high-priority OS notification if app is in background or screen off
+                    if (!ServiceState.isAppInForeground.value) {
+                        val notif = createContactLinkedNotification(fromUserId, fromUserName)
+                        notificationManager.notify(notifId.hashCode(), notif)
+                        Log.d(AUDIT_TAG, "PAIRING_LINKED_NOTIF_POSTED: Contact $fromUserName ($fromUserId)")
+                    }
                 }
 
-                // Dismiss from Supabase
-                serviceScope.launch(Dispatchers.IO) {
-                    userManager.dismissPairingNotification(notifId)
+                // Do not delete immediately so DashboardViewModel can read it for in-app UI.
+                // Auto-cleanup from Supabase only if older than 60s.
+                if (now - createdAt > 60_000L) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        userManager.dismissPairingNotification(notifId)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -322,11 +333,14 @@ class SOSForegroundService : Service() {
 
         return NotificationCompat.Builder(this, PAIRING_CHANNEL_ID)
             .setContentTitle("🎉 Contact Linked")
-            .setContentText("$fromUserName has linked with you as an emergency contact")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentText("$fromUserName has accepted your pairing invite")
+            .setSmallIcon(R.drawable.ic_sos)
+            .setColor(0xFFEC2027.toInt())
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
     }
 
@@ -417,6 +431,12 @@ class SOSForegroundService : Service() {
                     map[k] = namesObj.getString(k)
                 }
                 contactNames = map
+
+                // Update persistent contacts cache & RoleManager
+                userManager.saveContactsCache(contacts)
+                if (contacts.isNotEmpty()) {
+                    RoleManager.pairedUserId = contacts.first()
+                }
 
                 updateSosAlertListener(contacts)
             }
@@ -518,6 +538,8 @@ class SOSForegroundService : Service() {
 
         return NotificationCompat.Builder(this, GUARDIAN_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_sos)
+            .setColor(0xFFEC2027.toInt())
+            .setColorized(true)
             .setContentTitle("INCOMING SOS ALERT")
             .setContentText("$senderName is in danger!")
             .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -534,6 +556,15 @@ class SOSForegroundService : Service() {
     private fun startEmergencyMode() {
         if (isEmergencyActive) return
         
+        // Safety Gate: Do not start emergency session if no guardians are linked
+        if (!userManager.hasContactsSync() && userManager.getContactsSync().isEmpty()) {
+            Log.w(AUDIT_TAG, "SOS_BLOCKED_NO_GUARDIANS: Cannot start SOS because no emergency contacts are linked.")
+            val notification = createNotification("SoSafe Protection", "SOS Inactive: Link a guardian to enable emergency alerts.")
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(NOTIFICATION_ID, notification)
+            return
+        }
+
         isEmergencyActive = true
         sessionId = "session_" + System.currentTimeMillis()
         audioSequence = 0
@@ -858,12 +889,27 @@ class SOSForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun createNotification(title: String, content: String): Notification {
+    private fun createNotification(title: String, content: String, isEmergency: Boolean = false): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title).setContentText(content).setSmallIcon(R.drawable.ic_sos)
-            .setOngoing(true).setContentIntent(pendingIntent).build()
+
+        val isUrgent = isEmergency || isEmergencyActive || title.contains("EMERGENCY", ignoreCase = true)
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(content)
+            .setSmallIcon(R.drawable.ic_sos)
+            .setColor(0xFFEC2027.toInt())
+            .setOngoing(true)
+            .setContentIntent(pendingIntent)
+
+        if (isUrgent) {
+            builder.setColorized(true)
+            builder.setPriority(NotificationCompat.PRIORITY_MAX)
+            builder.setCategory(NotificationCompat.CATEGORY_ALARM)
+        }
+
+        return builder.build()
     }
 
     private fun createPairingNotification(
@@ -891,6 +937,7 @@ class SOSForegroundService : Service() {
             .setContentTitle("🔗 Link Request")
             .setContentText("$fromUserName ($fromUserId) sent you a link request")
             .setSmallIcon(R.drawable.ic_sos)
+            .setColor(0xFFEC2027.toInt())
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
@@ -908,6 +955,7 @@ class SOSForegroundService : Service() {
                 description = "Notifications for incoming guardian and contact link requests"
                 enableLights(true)
                 enableVibration(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             manager.createNotificationChannel(pairingChannel)
             

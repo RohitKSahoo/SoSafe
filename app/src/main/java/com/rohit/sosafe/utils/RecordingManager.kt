@@ -1,10 +1,14 @@
 package com.rohit.sosafe.utils
 
+import android.content.ContentValues
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import android.util.Log
 import com.google.firebase.firestore.GeoPoint
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +27,9 @@ data class RecordingInfo(
     val file: File,
     val timestamp: Long,
     val durationText: String,
-    val lastLocation: GeoPoint? = null
+    val lastLocation: GeoPoint? = null,
+    val videoFile: File? = null,
+    val hasVideo: Boolean = false
 )
 
 class RecordingManager(private val context: Context) {
@@ -57,27 +63,51 @@ class RecordingManager(private val context: Context) {
         }
     }
 
+    fun getVideoFile(userId: String, sessionId: String): File {
+        return File(getSessionFolder(userId, sessionId), "SOS_Video.mp4")
+    }
+
     fun getMetadata(userId: String, sessionId: String): RecordingInfo? {
         try {
             val folder = getSessionFolder(userId, sessionId)
             val metadataFile = File(folder, "metadata.json")
             val recordingFile = File(folder, "SOS_Recording.m4a")
+            val videoFile = File(folder, "SOS_Video.mp4")
             
-            if (!metadataFile.exists() || !recordingFile.exists()) return null
+            val hasVideo = videoFile.exists() && videoFile.length() > 0
+            val hasAudio = recordingFile.exists() && recordingFile.length() > 0
+
+            if (!hasAudio && !hasVideo) return null
+
+            val primaryFile = if (hasAudio) recordingFile else videoFile
             
-            val json = JSONObject(metadataFile.readText())
-            val lat = json.getDouble("lat")
-            val lng = json.getDouble("lng")
-            val timestamp = json.optLong("timestamp", recordingFile.lastModified())
+            var lat: Double? = null
+            var lng: Double? = null
+            var timestamp = primaryFile.lastModified()
+
+            if (metadataFile.exists()) {
+                try {
+                    val json = JSONObject(metadataFile.readText())
+                    if (json.has("lat") && json.has("lng")) {
+                        lat = json.getDouble("lat")
+                        lng = json.getDouble("lng")
+                    }
+                    timestamp = json.optLong("timestamp", primaryFile.lastModified())
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error parsing metadata.json: ${e.message}")
+                }
+            }
             
             val sdf = SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault())
             
             return RecordingInfo(
                 sessionId = sessionId,
-                file = recordingFile,
+                file = primaryFile,
                 timestamp = timestamp,
                 durationText = sdf.format(Date(timestamp)),
-                lastLocation = GeoPoint(lat, lng)
+                lastLocation = if (lat != null && lng != null) GeoPoint(lat, lng) else null,
+                videoFile = if (hasVideo) videoFile else null,
+                hasVideo = hasVideo
             )
         } catch (e: Exception) {
             return null
@@ -238,18 +268,59 @@ class RecordingManager(private val context: Context) {
                     metadata
                 } else {
                     val recordingFile = File(sessionDir, "SOS_Recording.m4a")
-                    if (recordingFile.exists() && recordingFile.length() > 0) {
-                        val timestamp = sessionId.substringAfter("session_").toLongOrNull() ?: sessionDir.lastModified()
+                    val videoFile = File(sessionDir, "SOS_Video.mp4")
+                    val hasVideo = videoFile.exists() && videoFile.length() > 0
+                    val hasAudio = recordingFile.exists() && recordingFile.length() > 0
+
+                    if (hasAudio || hasVideo) {
+                        val primaryFile = if (hasAudio) recordingFile else videoFile
+                        val timestamp = sessionId.substringAfter("session_").toLongOrNull() ?: primaryFile.lastModified()
                         RecordingInfo(
                             sessionId = sessionId,
-                            file = recordingFile,
+                            file = primaryFile,
                             timestamp = timestamp,
-                            durationText = sdf.format(Date(timestamp))
+                            durationText = sdf.format(Date(timestamp)),
+                            videoFile = if (hasVideo) videoFile else null,
+                            hasVideo = hasVideo
                         )
                     } else null
                 }
             }?.sortedByDescending { it.timestamp }
             ?: emptyList()
+    }
+
+    fun exportVideoToGallery(videoFile: File): Uri? {
+        if (!videoFile.exists()) return null
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, "SoSafe_${videoFile.nameWithoutExtension}_${System.currentTimeMillis()}.mp4")
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/SoSafe")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+            }
+            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
+            val uri = context.contentResolver.insert(collection, values) ?: return null
+            context.contentResolver.openOutputStream(uri)?.use { output ->
+                videoFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                context.contentResolver.update(uri, values, null, null)
+            }
+            uri
+        } catch (e: Exception) {
+            Log.e(TAG, "Error exporting video to gallery: ${e.message}")
+            null
+        }
     }
 
     fun deleteRecording(userId: String, sessionId: String) {
