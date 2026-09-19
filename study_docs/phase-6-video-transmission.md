@@ -34,29 +34,29 @@ Implement zero-cost live P2P camera video streaming over WebRTC during active SO
 
 ## Tasks
 
-- [ ] **Task 1: Add Video Track and Camera2Capturer to WebRTCManager**
+- [x] **Task 1: Add Video Track and Camera2Capturer to WebRTCManager**
   - Extend `WebRTCManager.kt` to initialize `Camera2Capturer` and attach `VideoTrack` to `PeerConnection`.
   - *Verify*: Compile with `./gradlew assembleDebug`.
 
-- [ ] **Task 2: Implement Switch Camera Support in WebRTCManager**
+- [x] **Task 2: Implement Switch Camera Support in WebRTCManager**
   - Implement `switchCamera()` on `Camera2Capturer` in `WebRTCManager.kt`.
   - *Verify*: Test camera toggle method compilation.
 
-- [ ] **Task 3: Add WebRTC SurfaceViewRenderer Compose Wrapper to MonitoringScreen**
+- [x] **Task 3: Add WebRTC SurfaceViewRenderer Compose Wrapper to MonitoringScreen**
   - Render incoming live WebRTC video feed using `AndroidView(factory = { SurfaceViewRenderer(context)... })` in `MonitoringScreen.kt`.
   - *Verify*: `./gradlew assembleDebug` builds without errors.
 
-- [ ] **Task 4: Add Video Upload Support to CloudinaryUploader**
+- [x] **Task 4: Add Video Upload Support to CloudinaryUploader**
   - Add `uploadVideo()` in `CloudinaryUploader.kt` pointing to `https://api.cloudinary.com/v1_1/$CLOUD_NAME/video/upload`.
   - *Verify*: `./gradlew assembleDebug` builds successfully.
 
-- [ ] **Task 5: Update Phase Tracker & Verify Build**
+- [x] **Task 5: Update Phase Tracker & Verify Build**
   - Mark Phase 6 tasks as completed in `study_docs/phase-6.md` and `study_docs/README.md`.
   - *Verify*: Run `./gradlew assembleDebug`.
 
 ---
 
 ## Done When
-- [ ] `./gradlew assembleDebug` succeeds with zero compilation errors.
-- [ ] Live WebRTC video stream and remote camera switching logic are fully integrated.
-- [ ] Phase documentation (`study_docs/phase-6.md`) updated per `.agents/rules/phase-tracker.md`.
+- [x] `./gradlew assembleDebug` succeeds with zero compilation errors.
+- [x] Live WebRTC video stream and remote camera switching logic are fully integrated.
+- [x] Phase documentation (`study_docs/phase-6.md`) updated per `.agents/rules/phase-tracker.md`.

@@ -117,7 +117,7 @@ class AudioPlaybackController(
         }
     }
 
-    private fun stopAndClear() {
+    fun stopAndClear() {
         Log.d(TAG, "Stopping playback and clearing queue.")
         queue.clear()
         try {

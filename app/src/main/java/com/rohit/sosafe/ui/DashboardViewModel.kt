@@ -15,6 +15,7 @@ import com.rohit.sosafe.utils.RecordingManager
 import com.rohit.sosafe.data.RoleManager
 import com.rohit.sosafe.utils.ServiceState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -41,6 +42,8 @@ class DashboardViewModel(
     private var pairingNotificationRealtime: SupabaseRealtimeClient? = null
     private var sessionsRealtime: SupabaseRealtimeClient? = null
     private var targetedPairingRequestId: String? = null
+    private var contactsPollingJob: Job? = null
+    private val handledPairingNotificationIds = mutableSetOf<String>()
 
     init {
         observeNetworkState()
@@ -115,10 +118,19 @@ class DashboardViewModel(
 
     private fun observeUserContacts(userCode: String) {
         userRealtime?.stop()
+        contactsPollingJob?.cancel()
         
         // Initial fetch
         viewModelScope.launch(Dispatchers.IO) {
             fetchUserContacts(userCode)
+        }
+
+        // Resilient polling loop to ensure contacts sync live across paired devices
+        contactsPollingJob = viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                kotlinx.coroutines.delay(3500)
+                fetchUserContacts(userCode)
+            }
         }
 
         userRealtime = SupabaseRealtimeClient("users", "user_id", userCode) { type, record ->
@@ -159,6 +171,12 @@ class DashboardViewModel(
                 }
 
                 _rawContacts.value = contacts
+
+                // Update persistent contacts cache & RoleManager for synchronous SOS validation
+                userManager.saveContactsCache(contactCodes)
+                if (contactCodes.isNotEmpty()) {
+                    RoleManager.pairedUserId = contactCodes.first()
+                }
 
                 // Always start session discovery regardless of mode so incoming alerts are universal
                 startSessionDiscovery(contactCodes)
@@ -294,8 +312,12 @@ class DashboardViewModel(
             if (rows.length() > 0) {
                 for (i in 0 until rows.length()) {
                     val obj = rows.getJSONObject(i)
+                    val notifId = obj.optString("notification_id")
+                    if (handledPairingNotificationIds.contains(notifId)) continue
+                    handledPairingNotificationIds.add(notifId)
+
                     val notif = com.rohit.sosafe.data.contracts.PairingNotification(
-                        notificationId = obj.optString("notification_id"),
+                        notificationId = notifId,
                         targetUserId = obj.optString("target_user_id"),
                         fromUserId = obj.optString("from_user_id"),
                         fromUserName = obj.optString("from_user_name"),
@@ -306,11 +328,12 @@ class DashboardViewModel(
                     // 1. Immediately refresh contacts live
                     fetchUserContacts(userCode)
 
-                    // 2. Set newly linked notice for UI banner/dialog
+                    // 2. Set newly linked notice for UI banner/snackbar
                     _dashboardState.update { it.copy(newlyLinkedNotice = notif) }
 
-                    // 3. Delete notification from Supabase so it only triggers once
+                    // 3. Cooperatively dismiss from Supabase after delay so service had time to read
                     viewModelScope.launch(Dispatchers.IO) {
+                        kotlinx.coroutines.delay(10_000L)
                         userManager.dismissPairingNotification(notif.notificationId)
                     }
                 }
@@ -567,8 +590,10 @@ class DashboardViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        contactsPollingJob?.cancel()
         userRealtime?.stop()
         pairingRealtime?.stop()
+        pairingNotificationRealtime?.stop()
         removalRealtime?.stop()
         sessionsRealtime?.stop()
     }

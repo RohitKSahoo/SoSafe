@@ -37,6 +37,11 @@ import kotlinx.coroutines.withContext
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import com.rohit.sosafe.utils.RecordingManager
+import com.rohit.sosafe.utils.WebRtcVideoRecorder
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Stop
+import java.io.File
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -46,6 +51,8 @@ import java.util.Locale
 fun VideoFeedScreen(
     videoTrack: VideoTrack?,
     displayName: String,
+    sessionId: String = "",
+    userId: String = "",
     onSwitchCamera: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -56,6 +63,53 @@ fun VideoFeedScreen(
     val context = LocalContext.current
     var isCapturing by remember { mutableStateOf(false) }
     var surfaceViewRef by remember { mutableStateOf<SurfaceViewRenderer?>(null) }
+
+    val recordingManager = remember { RecordingManager(context) }
+    val videoFile = remember(userId, sessionId) {
+        if (userId.isNotBlank() && sessionId.isNotBlank()) {
+            recordingManager.getVideoFile(userId, sessionId)
+        } else {
+            File(context.getExternalFilesDir(null), "recordings/live_${System.currentTimeMillis()}.mp4")
+        }
+    }
+
+    var isRecordingActive by remember { mutableStateOf(false) }
+    var recordingDurationSec by remember { mutableStateOf(0) }
+    val recorderRef = remember { mutableStateOf<WebRtcVideoRecorder?>(null) }
+
+    LaunchedEffect(isRecordingActive) {
+        if (isRecordingActive) {
+            recordingDurationSec = 0
+            while (isRecordingActive) {
+                kotlinx.coroutines.delay(1000L)
+                recordingDurationSec++
+            }
+        }
+    }
+
+    // Auto-start recording when live videoTrack is connected
+    LaunchedEffect(videoTrack) {
+        if (videoTrack != null && recorderRef.value == null) {
+            val recorder = WebRtcVideoRecorder(videoFile) { savedFile ->
+                Log.d("VideoFeedScreen", "Video recorded -> ${savedFile.absolutePath}")
+            }
+            recorderRef.value = recorder
+            recorder.startRecording(videoTrack)
+            isRecordingActive = true
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            recorderRef.value?.let { recorder ->
+                if (recorder.isRecordingActive()) {
+                    recorder.stopRecording()
+                    Toast.makeText(context, "Video feed saved to Session History", Toast.LENGTH_SHORT).show()
+                }
+            }
+            recorderRef.value = null
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -127,26 +181,59 @@ fun VideoFeedScreen(
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = PureWhite)
             }
 
-            Surface(
-                color = DangerRed,
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(PureWhite, CircleShape)
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isRecordingActive) {
+                    val mins = recordingDurationSec / 60
+                    val secs = recordingDurationSec % 60
+                    val durText = String.format("%02d:%02d", mins, secs)
+
+                    Surface(
+                        color = Black.copy(alpha = 0.8f),
+                        shape = RoundedCornerShape(4.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DangerRed)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(DangerRed, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "REC $durText",
+                                color = PureWhite,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "LIVE VIDEO: ${displayName.ifBlank { "USER" }}",
-                        color = PureWhite,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                }
+
+                Surface(
+                    color = DangerRed,
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(PureWhite, CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "LIVE: ${displayName.ifBlank { "USER" }}",
+                            color = PureWhite,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -164,8 +251,8 @@ fun VideoFeedScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Switch Camera Button
@@ -175,12 +262,10 @@ fun VideoFeedScreen(
                     shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.Cameraswitch, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("SWITCH CAM", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Icon(Icons.Default.Cameraswitch, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("CAM", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                 }
-
-                Spacer(modifier = Modifier.width(16.dp))
 
                 // Capture Snapshot Button
                 Button(
@@ -198,9 +283,46 @@ fun VideoFeedScreen(
                     shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (isCapturing) "SAVING..." else "SNAPSHOT", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (isCapturing) "..." else "PHOTO", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
+
+                // Toggle Record Button
+                Button(
+                    onClick = {
+                        if (isRecordingActive) {
+                            recorderRef.value?.stopRecording()
+                            isRecordingActive = false
+                            Toast.makeText(context, "Video recording stopped & saved", Toast.LENGTH_SHORT).show()
+                        } else if (videoTrack != null) {
+                            val recorder = WebRtcVideoRecorder(videoFile) { savedFile ->
+                                Log.d("VideoFeedScreen", "Video recorded: ${savedFile.absolutePath}")
+                            }
+                            recorderRef.value = recorder
+                            recorder.startRecording(videoTrack)
+                            isRecordingActive = true
+                            Toast.makeText(context, "Video recording started", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isRecordingActive) DangerRed else PureWhite,
+                        contentColor = if (isRecordingActive) PureWhite else Black
+                    ),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        if (isRecordingActive) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        if (isRecordingActive) "STOP" else "RECORD",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
                 }
             }
         }

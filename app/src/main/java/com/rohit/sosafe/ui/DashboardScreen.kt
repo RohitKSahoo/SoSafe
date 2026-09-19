@@ -22,10 +22,18 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.res.painterResource
+import com.rohit.sosafe.R
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,6 +95,7 @@ fun DashboardScreen(
     val state by viewModel.state.collectAsState()
     val pagerState = rememberPagerState(pageCount = { 2 })
     val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     
     var showMonitoringScreen by remember { mutableStateOf(false) }
     var selectedMonitoringSession by remember { mutableStateOf<SosSession?>(null) }
@@ -97,13 +106,34 @@ fun DashboardScreen(
     var showMyQrDialog by remember { mutableStateOf(false) }
     var showQrScannerDialog by remember { mutableStateOf(false) }
     var showPairingMenuDialog by remember { mutableStateOf(false) }
-    var scannedQrData by remember { mutableStateOf<ScannedQrData?>(null) }
+    var showNoGuardiansDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    val handleTriggerSOS: () -> Unit = {
+        if (state.contacts.isEmpty()) {
+            showNoGuardiansDialog = true
+        } else {
+            onTriggerSOS()
+        }
+    }
 
     LaunchedEffect(deepLinkPairData) {
         if (deepLinkPairData != null) {
-            scannedQrData = deepLinkPairData
+            val data = deepLinkPairData
             onClearDeepLinkPairData()
+            val targetId = data.userId.replace("-", "").trim().uppercase()
+            val targetName = data.userName.ifBlank { "User $targetId" }
+            viewModel.pairViaQrCode(targetId, targetName) { res ->
+                if (res.isSuccess) {
+                    Toast.makeText(context, "Linked with $targetName ($targetId) successfully!", Toast.LENGTH_SHORT).show()
+                } else {
+                    val errMsg = res.exceptionOrNull()?.message ?: "Unknown error"
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Pairing failed: $errMsg")
+                    }
+                    Toast.makeText(context, "Pairing failed: $errMsg", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -383,197 +413,92 @@ fun DashboardScreen(
         )
     }
 
-    // QR Camera Scanner Dialog
+    // QR Camera Scanner Dialog (Direct Auto-Pairing without naming prompt)
     if (showQrScannerDialog) {
         QrScannerDialog(
             onDismissRequest = { showQrScannerDialog = false },
             onQrScanned = { data ->
                 showQrScannerDialog = false
-                scannedQrData = data
+                val targetId = data.userId.replace("-", "").trim().uppercase()
+                val targetName = data.userName.ifBlank { "User $targetId" }
+                viewModel.pairViaQrCode(targetId, targetName) { res ->
+                    if (res.isSuccess) {
+                        Toast.makeText(context, "Linked with $targetName ($targetId) successfully!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val errMsg = res.exceptionOrNull()?.message ?: "Unknown error"
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("Pairing failed: $errMsg")
+                        }
+                        Toast.makeText(context, "Pairing failed: $errMsg", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         )
     }
 
-    // Scanned QR / Deep Link Naming Confirmation Dialog
-    if (scannedQrData != null) {
-        val data = scannedQrData!!
-        var customContactName by remember(data.userId) { mutableStateOf(data.userName.ifBlank { "" }) }
+    // No Guardians Linked Alert Dialog
+    if (showNoGuardiansDialog) {
         AlertDialog(
-            onDismissRequest = { scannedQrData = null },
-            title = { Text("LINK CONTACT", color = PureWhite, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text("Link with ${data.userName} (${data.userId})", color = LightGrey, style = MaterialTheme.typography.bodyMedium)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("NAME THIS CONTACT", color = PureWhite, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TextField(
-                        value = customContactName,
-                        onValueChange = { customContactName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Black,
-                            unfocusedContainerColor = Black,
-                            focusedTextColor = PureWhite,
-                            unfocusedTextColor = PureWhite,
-                            focusedIndicatorColor = PureWhite,
-                            unfocusedIndicatorColor = MediumGrey
-                        ),
-                        placeholder = { Text("Enter name (e.g. Mom, Rohit)", color = MediumGrey) },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val targetId = data.userId
-                        val nameToSave = customContactName.ifBlank { data.userName }
-                        scannedQrData = null
-                        viewModel.pairViaQrCode(targetId, nameToSave) { res ->
-                            if (res.isSuccess) {
-                                Toast.makeText(context, "Linked with $nameToSave successfully!", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "Pairing failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text("SAVE & LINK", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { scannedQrData = null }) {
-                    Text("CANCEL", color = LightGrey)
-                }
-            },
-            containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
-        )
-    }
-
-    // Bi-Directional Auto-Pairing Notice Dialog (Inviter is notified when Invitee links)
-    if (state.newlyLinkedNotice != null) {
-        val linkedNotif = state.newlyLinkedNotice!!
-        AlertDialog(
-            onDismissRequest = { viewModel.clearNewlyLinkedNotice() },
+            onDismissRequest = { showNoGuardiansDialog = false },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.CheckCircle,
+                        imageVector = Icons.Default.Warning,
                         contentDescription = null,
-                        tint = SuccessGreen,
+                        tint = DangerRed,
                         modifier = Modifier.size(24.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("CONTACT LINKED", color = PureWhite, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "NO GUARDIANS LINKED",
+                        color = PureWhite,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
                 }
             },
             text = {
                 Text(
-                    text = "${linkedNotif.fromUserName} (${linkedNotif.fromUserId}) has linked with you as an emergency contact!",
+                    text = "You cannot trigger an emergency SOS without at least one linked emergency contact. Link a guardian to share your live location and audio feed during emergencies.",
                     color = LightGrey,
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 20.sp
                 )
             },
             confirmButton = {
                 Button(
-                    onClick = { viewModel.clearNewlyLinkedNotice() },
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen, contentColor = Black),
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text("GREAT", fontWeight = FontWeight.Bold)
-                }
-            },
-            containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
-        )
-    }
-
-    // Auto popup on Sender device when a new Guardian links via QR code
-    var newlyLinkedContactToName by remember { mutableStateOf<Contact?>(null) }
-    val promptDismissedContacts = remember { mutableStateOf(setOf<String>()) }
-    
-    LaunchedEffect(state.contacts, appMode) {
-        if (appMode == AppMode.SENDER) {
-            val unrenamedContact = state.contacts.find { contact ->
-                (contact.name.startsWith("User ", ignoreCase = true) || contact.name.startsWith("USER_", ignoreCase = true)) &&
-                        !promptDismissedContacts.value.contains(contact.id)
-            }
-            if (unrenamedContact != null && newlyLinkedContactToName == null) {
-                newlyLinkedContactToName = unrenamedContact
-            }
-        }
-    }
-
-    if (newlyLinkedContactToName != null) {
-        val targetContact = newlyLinkedContactToName!!
-        var senderSideName by remember(targetContact.id) { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = {
-                promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
-                newlyLinkedContactToName = null
-            },
-            title = { Text("GUARDIAN LINKED", color = PureWhite, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text(
-                        "A new guardian (${targetContact.id}) has linked with your device.",
-                        color = LightGrey,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "NAME THIS GUARDIAN",
-                        color = PureWhite,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TextField(
-                        value = senderSideName,
-                        onValueChange = { senderSideName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Black,
-                            unfocusedContainerColor = Black,
-                            focusedTextColor = PureWhite,
-                            unfocusedTextColor = PureWhite,
-                            focusedIndicatorColor = PureWhite,
-                            unfocusedIndicatorColor = MediumGrey
-                        ),
-                        placeholder = { Text("Enter name...", color = MediumGrey) },
-                        singleLine = true
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
                     onClick = {
-                        val nameToSet = senderSideName.ifBlank { targetContact.name }
-                        viewModel.renameContact(targetContact.id, nameToSet)
-                        promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
-                        newlyLinkedContactToName = null
+                        showNoGuardiansDialog = false
+                        showPairingMenuDialog = true
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
                     shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text("SAVE", fontWeight = FontWeight.Bold)
+                    Text("LINK GUARDIAN", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    promptDismissedContacts.value = promptDismissedContacts.value + targetContact.id
-                    newlyLinkedContactToName = null
-                }) {
-                    Text("SKIP", color = LightGrey)
+                TextButton(onClick = { showNoGuardiansDialog = false }) {
+                    Text("CANCEL", color = LightGrey)
                 }
             },
             containerColor = DarkGrey,
-            shape = RoundedCornerShape(4.dp)
+            shape = RoundedCornerShape(4.dp),
+            modifier = Modifier.border(1.dp, MediumGrey, RoundedCornerShape(4.dp))
         )
+    }
+
+    // Bi-Directional Auto-Pairing Notice (Inviter is notified with in-app Snackbar when Invitee links)
+    LaunchedEffect(state.newlyLinkedNotice) {
+        val linkedNotif = state.newlyLinkedNotice
+        if (linkedNotif != null) {
+            val fromName = linkedNotif.fromUserName.ifBlank { "User ${linkedNotif.fromUserId}" }
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Pairing successful with $fromName!")
+            }
+            Toast.makeText(context, "Pairing successful with $fromName!", Toast.LENGTH_SHORT).show()
+            viewModel.clearNewlyLinkedNotice()
+        }
     }
 
     // Alert Popup Handling
@@ -687,7 +612,12 @@ fun DashboardScreen(
                 Button(
                     onClick = { 
                         if (remainingSeconds > 0) {
+                            val peerName = if (contactCustomName.isNotBlank()) contactCustomName else request.fromUserName.ifBlank { "User ${request.fromUserId}" }
                             viewModel.acceptPairingRequest(request, contactCustomName)
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar("Pairing successful with $peerName!")
+                            }
+                            Toast.makeText(context, "Pairing successful with $peerName!", Toast.LENGTH_SHORT).show()
                         } else {
                             viewModel.declinePairingRequest(request)
                         }
@@ -857,6 +787,19 @@ fun DashboardScreen(
                         }
                     ) 
                 },
+                snackbarHost = {
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    ) { snackbarData ->
+                        Snackbar(
+                            snackbarData = snackbarData,
+                            containerColor = DarkGrey,
+                            contentColor = PureWhite,
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                    }
+                },
                 containerColor = Color.Transparent,
                 modifier = modifier.fillMaxSize()
             ) { padding ->
@@ -916,9 +859,7 @@ fun DashboardScreen(
                             1 -> { // Settings
                                 SystemConfigSection(
                                     appMode = appMode,
-                                    streamingMode = state.streamingMode,
-                                    onStreamingModeChange = { viewModel.setStreamingMode(it) },
-                                    onTriggerSOS = onTriggerSOS,
+                                    onTriggerSOS = handleTriggerSOS,
                                     onStopService = onStopService,
                                     onSwitchMode = onSwitchMode
                                 )
@@ -1008,9 +949,18 @@ fun SessionHistoryDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = SuccessGreen)
+                                    Icon(
+                                        imageVector = if (recording.hasVideo) Icons.Default.Videocam else Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        tint = if (recording.hasVideo) PureWhite else SuccessGreen
+                                    )
                                     Spacer(modifier = Modifier.width(12.dp))
-                                    Text(recording.durationText, color = PureWhite, style = MaterialTheme.typography.bodyMedium)
+                                    Column {
+                                        Text(recording.durationText, color = PureWhite, style = MaterialTheme.typography.bodyMedium)
+                                        if (recording.hasVideo) {
+                                            Text("VIDEO ARCHIVE", color = LightGrey, style = MaterialTheme.typography.labelSmall, fontSize = 10.sp)
+                                        }
+                                    }
                                 }
 
                                 IconButton(
@@ -1414,9 +1364,9 @@ fun DndAccessCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(DarkCard)
-            .border(1.dp, DangerRed.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .clip(RoundedCornerShape(0.dp))
+            .background(DarkGrey)
+            .border(1.dp, MediumGrey, RoundedCornerShape(0.dp))
             .padding(20.dp)
     ) {
         Row(
@@ -1445,11 +1395,13 @@ fun DndAccessCard(
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onGrantClick,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
-            shape = RoundedCornerShape(4.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+            shape = RoundedCornerShape(0.dp)
         ) {
-            Text("ENABLE DND OVERRIDE", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("ENABLE DND OVERRIDE", fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
         }
     }
 }
@@ -1462,9 +1414,9 @@ fun OverlayAccessCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(DarkCard)
-            .border(1.dp, DangerRed.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .clip(RoundedCornerShape(0.dp))
+            .background(DarkGrey)
+            .border(1.dp, MediumGrey, RoundedCornerShape(0.dp))
             .padding(20.dp)
     ) {
         Row(
@@ -1493,11 +1445,13 @@ fun OverlayAccessCard(
         Spacer(modifier = Modifier.height(16.dp))
         Button(
             onClick = onGrantClick,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = PureWhite),
-            shape = RoundedCornerShape(4.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
+            shape = RoundedCornerShape(0.dp)
         ) {
-            Text("ENABLE APPEAR ON TOP", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("ENABLE APPEAR ON TOP", fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
         }
     }
 }
@@ -1508,56 +1462,62 @@ fun TopBar(isProtectionActive: Boolean, appMode: AppMode, onStopService: () -> U
         modifier = Modifier
             .statusBarsPadding()
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 20.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "SOSAFE",
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontSize = 42.sp,
+                    text = "S O S",
+                    fontSize = 24.sp,
+                    color = DangerRed,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 4.sp
+                )
+                Text(
+                    text = " A F E",
+                    fontSize = 24.sp,
                     color = PureWhite,
                     fontWeight = FontWeight.Black,
-                    letterSpacing = 2.sp
+                    letterSpacing = 4.sp
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                if (appMode == AppMode.GUARDIAN) {
-                    Icon(
-                        imageVector = Icons.Default.Shield,
-                        contentDescription = "Guardian Mode",
-                        tint = PureWhite,
-                        modifier = Modifier.size(34.dp)
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Sos,
-                        contentDescription = "Sender Mode",
-                        tint = DangerRed,
-                        modifier = Modifier.size(36.dp)
-                    )
-                }
             }
-            Text(
-                text = if (appMode == AppMode.SENDER) {
-                    if (isProtectionActive) "PROTECTION ENABLED" else "SYSTEM IDLE"
-                } else "GUARDIAN MODE ACTIVE",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (appMode == AppMode.SENDER && isProtectionActive) SuccessGreen else if (appMode == AppMode.GUARDIAN) SuccessGreen else LightGrey
-            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (appMode == AppMode.SENDER) {
+                        if (isProtectionActive) "PROTECTION ENABLED" else "SYSTEM IDLE"
+                    } else "GUARDIAN ACTIVE",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    color = Color(0xFF888888),
+                    letterSpacing = 1.2.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (isProtectionActive) SuccessGreen else MediumGrey)
+                )
+            }
         }
 
-        if (appMode == AppMode.SENDER && isProtectionActive) {
-            IconButton(
-                onClick = onStopService,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(MediumGrey)
-                    .size(40.dp)
-            ) {
-                Icon(Icons.Default.PowerSettingsNew, contentDescription = "Stop", tint = PureWhite, modifier = Modifier.size(20.dp))
-            }
+        IconButton(
+            onClick = onStopService,
+            modifier = Modifier
+                .size(42.dp)
+                .border(1.dp, Color(0xFF2E2E2E), RoundedCornerShape(0.dp))
+                .background(Color(0xFF141414), RoundedCornerShape(0.dp))
+        ) {
+            Icon(
+                imageVector = Icons.Default.PowerSettingsNew,
+                contentDescription = "Shutdown Service",
+                tint = PureWhite,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -1826,10 +1786,33 @@ fun ContactItem(contact: Contact, onClick: () -> Unit, onRenameClick: () -> Unit
 }
 
 @Composable
+fun SettingsSectionHeader(title: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            color = Color(0xFF7A7A7A),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp
+        )
+        Spacer(modifier = Modifier.width(16.dp))
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(Color(0xFF222222))
+        )
+    }
+}
+
+@Composable
 fun SystemConfigSection(
     appMode: AppMode, 
-    streamingMode: StreamingMode,
-    onStreamingModeChange: (StreamingMode) -> Unit,
     onTriggerSOS: () -> Unit, 
     onStopService: () -> Unit, 
     onSwitchMode: () -> Unit
@@ -1859,7 +1842,7 @@ fun SystemConfigSection(
                         },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(4.dp),
+                        shape = RoundedCornerShape(0.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = PureWhite,
                             unfocusedTextColor = PureWhite,
@@ -1886,7 +1869,7 @@ fun SystemConfigSection(
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = PureWhite, contentColor = Black),
-                    shape = RoundedCornerShape(4.dp)
+                    shape = RoundedCornerShape(0.dp)
                 ) {
                     Text("SAVE", fontWeight = FontWeight.Bold)
                 }
@@ -1897,7 +1880,7 @@ fun SystemConfigSection(
                 }
             },
             containerColor = DarkGrey,
-            shape = RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(0.dp)
         )
     }
 
@@ -1905,142 +1888,281 @@ fun SystemConfigSection(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(text = "IDENTITY & PROFILE", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+        // 1. MY PROFILE
+        SettingsSectionHeader(title = "MY PROFILE")
         Card(
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(0.dp))
                 .clickable {
                     editedNameInput = currentUserName
                     showEditNameDialog = true
                 },
-            colors = CardDefaults.cardColors(containerColor = DarkCard),
-            shape = RoundedCornerShape(4.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF121212)),
+            shape = RoundedCornerShape(0.dp),
+            border = BorderStroke(1.dp, Color(0xFF1E1E1E))
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp),
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.Person, contentDescription = null, tint = PureWhite, modifier = Modifier.size(24.dp))
-                    Spacer(modifier = Modifier.width(16.dp))
+                    Icon(
+                        imageVector = Icons.Outlined.Person, 
+                        contentDescription = null, 
+                        tint = PureWhite, 
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Spacer(modifier = Modifier.width(20.dp))
                     Column {
-                        Text("USER NAME", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "USER NAME", 
+                            color = Color(0xFF7A7A7A), 
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.2.sp
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
                         Text(
                             text = currentUserName.ifBlank { "Not set (Tap to edit)" },
                             color = if (currentUserName.isNotBlank()) PureWhite else LightGrey,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
+                            fontSize = 17.sp
                         )
                     }
                 }
-                Icon(Icons.Default.Edit, contentDescription = "Edit Name", tint = LightGrey, modifier = Modifier.size(20.dp))
-            }
-        }
-
-        if (appMode == AppMode.SENDER) {
-            Text(text = "EMERGENCY ACTIONS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-            Card(
-                modifier = Modifier.fillMaxWidth().clickable { onTriggerSOS() },
-                colors = CardDefaults.cardColors(containerColor = DangerRed),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Warning, contentDescription = null, tint = PureWhite)
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text("TRIGGER MANUAL SOS", color = PureWhite, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        Text(text = "DEBUG: AUDIO STREAMING MODE", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = DarkCard),
-            shape = RoundedCornerShape(4.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                StreamingMode.entries.forEach { mode ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onStreamingModeChange(mode) }
-                            .padding(vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = streamingMode == mode,
-                            onClick = { onStreamingModeChange(mode) },
-                            colors = RadioButtonDefaults.colors(selectedColor = PureWhite, unselectedColor = LightGrey)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = mode.label, color = if (streamingMode == mode) PureWhite else LightGrey)
-                    }
-                }
-            }
-        }
-
-        Text(text = "SYSTEM SETTINGS", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-
-        val context = LocalContext.current
-        Card(
-            modifier = Modifier.fillMaxWidth().clickable {
-                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.fromParts("package", context.packageName, null)
-                }
-                context.startActivity(intent)
-            },
-            colors = CardDefaults.cardColors(containerColor = DarkCard),
-            shape = RoundedCornerShape(4.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
-        ) {
-            Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Security, contentDescription = null, tint = LightGrey)
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text("MANAGE APP PERMISSIONS", color = TextPrimary, fontWeight = FontWeight.Bold)
-                    Text("Location, Microphone, Notifications", color = TextSecondary, style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
-
-        if (appMode == AppMode.SENDER) {
-            Card(
-                modifier = Modifier.fillMaxWidth().clickable { onStopService() },
-                colors = CardDefaults.cardColors(containerColor = DarkCard),
-                shape = RoundedCornerShape(4.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
-            ) {
-                Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.PowerSettingsNew, contentDescription = null, tint = LightGrey)
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text("SHUTDOWN SERVICE", color = TextPrimary)
-                }
-            }
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth().clickable { onSwitchMode() },
-            colors = CardDefaults.cardColors(containerColor = DarkCard),
-            shape = RoundedCornerShape(4.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkStroke)
-        ) {
-            Row(modifier = Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.SyncAlt, contentDescription = null, tint = LightGrey)
-                Spacer(modifier = Modifier.width(16.dp))
-                Text(
-                    text = if (appMode == AppMode.SENDER) "SWITCH TO GUARDIAN MODE" else "SWITCH TO SENDER MODE",
-                    color = TextPrimary
+                Icon(
+                    imageVector = Icons.Default.ChevronRight, 
+                    contentDescription = "Edit Name", 
+                    tint = Color(0xFF7A7A7A), 
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
+
+        // 2. EMERGENCY ACTIONS
+        SettingsSectionHeader(title = "EMERGENCY ACTIONS")
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(0.dp))
+                .clickable { onTriggerSOS() },
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF121212)),
+            shape = RoundedCornerShape(0.dp),
+            border = BorderStroke(1.dp, Color(0xFF1E1E1E))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    // Red SOS circular badge
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .border(1.5.dp, DangerRed, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "SOS",
+                            color = DangerRed,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    // Subtle vertical line separator
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(32.dp)
+                            .background(Color(0xFF222222))
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text(
+                            text = "TRIGGER MANUAL SOS", 
+                            color = PureWhite, 
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            letterSpacing = 0.8.sp
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = "Send alert to your guardians immediately.", 
+                            color = Color(0xFF7A7A7A), 
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Normal
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Default.ChevronRight, 
+                    contentDescription = null, 
+                    tint = Color(0xFF7A7A7A), 
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        // 3. SYSTEM
+        SettingsSectionHeader(title = "SYSTEM")
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // App Permissions
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(0.dp))
+                    .clickable {
+                        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", context.packageName, null)
+                        }
+                        context.startActivity(intent)
+                    },
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF121212)),
+                shape = RoundedCornerShape(0.dp),
+                border = BorderStroke(1.dp, Color(0xFF1E1E1E))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = Icons.Outlined.Shield, 
+                            contentDescription = null, 
+                            tint = PureWhite,
+                            modifier = Modifier.size(26.dp)
+                        )
+                        Spacer(modifier = Modifier.width(20.dp))
+                        Column {
+                            Text(
+                                text = "APP PERMISSIONS", 
+                                color = PureWhite, 
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                letterSpacing = 0.8.sp
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "Location, Microphone, Notifications", 
+                                color = Color(0xFF7A7A7A), 
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight, 
+                        contentDescription = null, 
+                        tint = Color(0xFF7A7A7A), 
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // Switch Mode
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(0.dp))
+                    .clickable { onSwitchMode() },
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF121212)),
+                shape = RoundedCornerShape(0.dp),
+                border = BorderStroke(1.dp, Color(0xFF1E1E1E))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = Icons.Default.SyncAlt, 
+                            contentDescription = null, 
+                            tint = PureWhite,
+                            modifier = Modifier.size(26.dp)
+                        )
+                        Spacer(modifier = Modifier.width(20.dp))
+                        Column {
+                            Text(
+                                text = if (appMode == AppMode.SENDER) "SWITCH TO GUARDIAN MODE" else "SWITCH TO SENDER MODE",
+                                color = PureWhite,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                letterSpacing = 0.8.sp
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (appMode == AppMode.SENDER) "Receive & monitor alerts from peers" else "Broadcast SOS alerts to guardians",
+                                color = Color(0xFF7A7A7A),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight, 
+                        contentDescription = null, 
+                        tint = Color(0xFF7A7A7A), 
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // Small rectangular pill redirecting to GitHub profile (outline only)
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(0.dp))
+                    .border(1.dp, Color(0xFF333333), RoundedCornerShape(0.dp))
+                    .background(Color.Transparent)
+                    .clickable {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/RohitKSahoo"))
+                        context.startActivity(intent)
+                    }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_github),
+                    contentDescription = "GitHub",
+                    tint = LightGrey,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "rohitksahoo",
+                    color = LightGrey,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.8.sp
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
@@ -2053,7 +2175,7 @@ fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
         NavigationBar(
             modifier = Modifier
                 .navigationBarsPadding()
-                .height(60.dp),
+                .height(58.dp),
             containerColor = Black,
             tonalElevation = 0.dp,
             windowInsets = WindowInsets(0, 0, 0, 0)
@@ -2062,12 +2184,12 @@ fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
                 selected = selectedTab == 0,
                 onClick = { onTabSelected(0) },
                 icon = { Icon(Icons.Default.GridView, null, modifier = Modifier.size(20.dp)) },
-                label = { Text("DASHBOARD", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+                label = { Text("DASHBOARD", fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = PureWhite, 
                     selectedTextColor = PureWhite, 
-                    unselectedIconColor = LightGrey, 
-                    unselectedTextColor = LightGrey,
+                    unselectedIconColor = Color(0xFF666666), 
+                    unselectedTextColor = Color(0xFF666666),
                     indicatorColor = Color.Transparent
                 )
             )
@@ -2075,12 +2197,12 @@ fun BottomNav(selectedTab: Int, onTabSelected: (Int) -> Unit) {
                 selected = selectedTab == 1,
                 onClick = { onTabSelected(1) },
                 icon = { Icon(Icons.Default.Settings, null, modifier = Modifier.size(20.dp)) },
-                label = { Text("SYSTEM", fontSize = 10.sp, fontWeight = FontWeight.Bold) },
+                label = { Text("SYSTEM", fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = PureWhite, 
                     selectedTextColor = PureWhite, 
-                    unselectedIconColor = LightGrey, 
-                    unselectedTextColor = LightGrey,
+                    unselectedIconColor = Color(0xFF666666), 
+                    unselectedTextColor = Color(0xFF666666),
                     indicatorColor = Color.Transparent
                 )
             )

@@ -18,10 +18,33 @@ class UserManager(val context: Context) {
     private val tag = "UserManager"
     private val userCodeKey = "user_code"
     private val userNameKey = "user_name"
+    private val cachedContactsKey = "cached_contacts"
     private val prefsName = "sosafe_prefs"
 
     fun hasPermission(permission: String): Boolean {
         return context.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    fun getContactsSync(): List<String> {
+        val sharedPrefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        val set = sharedPrefs.getStringSet(cachedContactsKey, null) ?: return emptyList()
+        return set.toList()
+    }
+
+    fun hasContactsSync(): Boolean {
+        val sharedPrefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        val set = sharedPrefs.getStringSet(cachedContactsKey, null)
+        if (set != null && set.isNotEmpty()) return true
+        if (!RoleManager.pairedUserId.isNullOrBlank()) return true
+        return false
+    }
+
+    fun saveContactsCache(contacts: List<String>) {
+        val sharedPrefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+        sharedPrefs.edit().putStringSet(cachedContactsKey, contacts.toSet()).apply()
+        if (contacts.isNotEmpty()) {
+            RoleManager.pairedUserId = contacts.first()
+        }
     }
 
     fun getUserName(): String {
@@ -204,7 +227,28 @@ class UserManager(val context: Context) {
             val statusJson = JSONObject().apply { put("status", SoSafeContract.Status.ACCEPTED) }
             SupabaseApi.update("pairing_requests", "request_id=eq.$requestId", statusJson)
 
-            Log.d(tag, "Pairing request accepted between $myCode and $fromUserId")
+            // 4. Send live pairing notification to fromUserId so their device syncs immediately
+            val myName = getUserName().ifBlank { "User $myCode" }
+            val notifId = "notif_accept_${requestId}_${System.currentTimeMillis()}"
+            val notifJson = JSONObject().apply {
+                put("notification_id", notifId)
+                put("target_user_id", fromUserId)
+                put("from_user_id", myCode)
+                put("from_user_name", myName)
+                put("type", "PAIRING_ACCEPTED")
+                put("created_at", System.currentTimeMillis())
+            }
+            SupabaseApi.upsert("pairing_notifications", notifJson, onConflict = "notification_id")
+
+            Log.d(tag, "Pairing request accepted between $myCode and $fromUserId; notification sent to $fromUserId")
+
+            // Ensure local contacts cache is updated immediately on acceptor device
+            val currentContacts = getContactsSync().toMutableList()
+            if (!currentContacts.contains(fromUserId)) {
+                currentContacts.add(fromUserId)
+                saveContactsCache(currentContacts)
+            }
+
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(tag, "Error accepting pairing request: ${e.message}")
@@ -247,6 +291,13 @@ class UserManager(val context: Context) {
                 put("created_at", System.currentTimeMillis())
             }
             SupabaseApi.upsert("pairing_notifications", notifJson, onConflict = "notification_id")
+
+            // Ensure local contacts cache is updated immediately on scanner device
+            val currentContacts = getContactsSync().toMutableList()
+            if (!currentContacts.contains(targetCode)) {
+                currentContacts.add(targetCode)
+                saveContactsCache(currentContacts)
+            }
 
             Log.d(tag, "Instant pairing completed between $myCode and $targetCode (Notified target as: $myName)")
             Result.success(Unit)
@@ -300,15 +351,25 @@ class UserManager(val context: Context) {
             val contactsArr = userObj.optJSONArray("contacts") ?: JSONArray()
             var exists = false
             val newArr = JSONArray()
+            val list = mutableListOf<String>()
             for (i in 0 until contactsArr.length()) {
                 val c = contactsArr.getString(i)
                 newArr.put(c)
+                list.add(c)
                 if (c == contactCode) exists = true
             }
-            if (!exists) newArr.put(contactCode)
+            if (!exists) {
+                newArr.put(contactCode)
+                list.add(contactCode)
+            }
 
             val updateObj = JSONObject().apply { put("contacts", newArr) }
             SupabaseApi.update("users", "user_id=eq.$userId", updateObj)
+
+            val myCode = getUserCodeSync()
+            if (userId == myCode) {
+                saveContactsCache(list)
+            }
         }
     }
 
@@ -318,14 +379,21 @@ class UserManager(val context: Context) {
             val userObj = rows.getJSONObject(0)
             val contactsArr = userObj.optJSONArray("contacts") ?: JSONArray()
             val newArr = JSONArray()
+            val list = mutableListOf<String>()
             for (i in 0 until contactsArr.length()) {
                 val c = contactsArr.getString(i)
                 if (c != contactCode) {
                     newArr.put(c)
+                    list.add(c)
                 }
             }
             val updateObj = JSONObject().apply { put("contacts", newArr) }
             SupabaseApi.update("users", "user_id=eq.$userId", updateObj)
+
+            val myCode = getUserCodeSync()
+            if (userId == myCode) {
+                saveContactsCache(list)
+            }
         }
     }
 
@@ -413,7 +481,7 @@ class UserManager(val context: Context) {
     }
 
     suspend fun getContacts(): List<String> = withContext(Dispatchers.IO) {
-        val myCode = getUserCodeSync() ?: return@withContext emptyList()
+        val myCode = getUserCodeSync() ?: return@withContext getContactsSync()
         try {
             val rows = SupabaseApi.select("users", "user_id=eq.$myCode")
             if (rows.length() > 0) {
@@ -422,10 +490,14 @@ class UserManager(val context: Context) {
                 for (i in 0 until contactsArr.length()) {
                     list.add(contactsArr.getString(i))
                 }
+                saveContactsCache(list)
                 list
-            } else emptyList()
+            } else {
+                saveContactsCache(emptyList())
+                emptyList()
+            }
         } catch (e: Exception) {
-            emptyList()
+            getContactsSync()
         }
     }
 }
